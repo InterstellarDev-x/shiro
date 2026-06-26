@@ -10,4 +10,8 @@
     font-family: system-ui, sans-serif;
     margin: 0;
   }
+
+  body.overlay {
+    background: transparent !important;
+  }
 }

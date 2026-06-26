@@ -28,7 +28,7 @@
         "height": 480,
         "decorations": false,
         "alwaysOnTop": true,
-        "resizable": false,
+        "resizable": true,
         "visible": false,
         "x": 40,
         "y": 40,
@@ -50,9 +50,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": {
-        "NSScreenCaptureDescription": "Shiro captures your screen to send to an AI assistant for analysis."
-      }
+      "infoPlist": "Info.plist"
     }
   }
 }
