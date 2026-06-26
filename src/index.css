@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    @apply bg-white text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100;
+    font-family: system-ui, sans-serif;
+    margin: 0;
+  }
+}
