@@ -1,3 +1,7 @@
+mod phonon;
+
+pub use phonon::PhononEngine;
+
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 

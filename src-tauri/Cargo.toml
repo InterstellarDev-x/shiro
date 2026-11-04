@@ -44,6 +44,9 @@ async-trait = "0.1"
 cpal = "0.15"
 crossbeam-channel = "0.5"
 
+# Streaming speech WebSocket (local Phonon on this branch)
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
 [profile.release]
 opt-level = "s"   # optimize for binary size
 
