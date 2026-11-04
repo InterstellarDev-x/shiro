@@ -1,5 +1,8 @@
+mod audio;
 mod capture;
+mod listen;
 mod llm;
+mod stt;
 
 use base64::Engine as _;
 use llm::{AnthropicProvider, OpenAiProvider, StreamChunk, VisionLlm};
@@ -21,6 +24,8 @@ use tokio::sync::Mutex;
 pub struct AppState {
     pub llm: Arc<dyn VisionLlm>,
     pub last_screenshot: Option<Vec<u8>>,
+    pub speech: Arc<dyn stt::SpeechEngine>,
+    pub session: Option<listen::ListenSession>,
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +178,76 @@ async fn set_provider(
 }
 
 #[tauri::command]
+async fn start_listening(
+    api_key: Option<String>,
+    model: Option<String>,
+    channel: tauri::ipc::Channel<stt::TranscriptEvent>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let speech = {
+        let app = state.lock().await;
+        if app.session.is_some() {
+            return Err("Already listening".into());
+        }
+        app.speech.clone()
+    };
+    if speech.id() == "none" {
+        return Err(
+            "This build has no speech engine. Switch to the speech-deepgram or speech-phonon branch."
+                .into(),
+        );
+    }
+
+    let config = stt::SpeechConfig {
+        api_key: api_key
+            .filter(|key| !key.is_empty())
+            .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
+            .unwrap_or_default(),
+        model: model.unwrap_or_default(),
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+    let forward = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if channel.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut session = match listen::start_session(speech, config, tx).await {
+        Ok(session) => session,
+        Err(error) => {
+            forward.abort();
+            return Err(error);
+        }
+    };
+    session.push_task(forward);
+    let mut app = state.lock().await;
+    if app.session.is_some() {
+        drop(app);
+        session.shutdown().await;
+        return Err("Already listening".into());
+    }
+    app.session = Some(session);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_listening(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let session = state.lock().await.session.take();
+    if let Some(session) = session {
+        session.shutdown().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn speech_engine_id(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    Ok(state.lock().await.speech.id().to_string())
+}
+
+#[tauri::command]
 async fn set_hotkey(
     shortcut_str: String,
     app: tauri::AppHandle,
@@ -267,7 +342,13 @@ pub fn run() {
         Arc::new(AnthropicProvider::new(""))
     };
 
-    let state = Mutex::new(AppState { llm, last_screenshot: None });
+    let speech: Arc<dyn stt::SpeechEngine> = Arc::new(stt::MissingEngine);
+    let state = Mutex::new(AppState {
+        llm,
+        last_screenshot: None,
+        speech,
+        session: None,
+    });
 
     let default_hotkey = "Ctrl+Shift+0";
     let shortcut = parse_shortcut(default_hotkey).expect("default shortcut must parse");
@@ -285,6 +366,9 @@ pub fn run() {
             set_hotkey,
             set_autostart,
             get_autostart,
+            start_listening,
+            stop_listening,
+            speech_engine_id,
         ])
         .setup(move |app| {
             // Register hotkey

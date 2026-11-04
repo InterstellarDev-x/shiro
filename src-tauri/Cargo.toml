@@ -40,8 +40,16 @@ tokio = { version = "1", features = ["full"] }
 # Async trait support
 async-trait = "0.1"
 
+# Microphone capture and the handoff from the audio callback thread
+cpal = "0.15"
+crossbeam-channel = "0.5"
+
 [profile.release]
 opt-level = "s"   # optimize for binary size
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", features = ["NSWindow"] }
+screencapturekit = "11"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.21"

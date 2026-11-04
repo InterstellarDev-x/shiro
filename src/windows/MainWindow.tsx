@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCaptureQuery } from "../hooks/useCaptureQuery";
+import { DEFAULT_DEEPGRAM_MODEL, DEFAULT_PHONON_MODEL, SPEECH_PROVIDER } from "../speech/provider";
 import { useHistory, HistoryEntry } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
 import ReactMarkdown from "react-markdown";
@@ -225,6 +226,44 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
           </div>
           {hotkeyError && <p className="text-xs text-red-500">{hotkeyError}</p>}
           <p className="text-xs text-zinc-400">Format: Ctrl+Shift+0 — modifiers: Ctrl Shift Alt Meta. Keys: A–Z, 0–9, F1–F12, Space, Tab.</p>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">
+            Call transcription
+          </label>
+          {SPEECH_PROVIDER === "none" && (
+            <p className="text-xs text-zinc-400">
+              This build has no speech engine. The speech-deepgram and speech-phonon branches add one. Listening stays in the overlay.
+            </p>
+          )}
+          {SPEECH_PROVIDER === "deepgram" && (
+            <input
+              type="password"
+              defaultValue={localStorage.getItem("api_key_deepgram") ?? ""}
+              onChange={(e) => localStorage.setItem("api_key_deepgram", e.target.value)}
+              placeholder="Deepgram API key"
+              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          )}
+          {SPEECH_PROVIDER === "phonon" && (
+            <input
+              type="text"
+              defaultValue={localStorage.getItem("phonon_model") ?? DEFAULT_PHONON_MODEL}
+              onChange={(e) => localStorage.setItem("phonon_model", e.target.value)}
+              placeholder={DEFAULT_PHONON_MODEL}
+              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          )}
+          {SPEECH_PROVIDER === "deepgram" && (
+            <input
+              type="text"
+              defaultValue={localStorage.getItem("deepgram_model") ?? DEFAULT_DEEPGRAM_MODEL}
+              onChange={(e) => localStorage.setItem("deepgram_model", e.target.value)}
+              placeholder={DEFAULT_DEEPGRAM_MODEL}
+              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          )}
         </div>
 
         {/* Launch at startup */}

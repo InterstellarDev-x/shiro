@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCaptureQuery } from "../hooks/useCaptureQuery";
 import { useHistory } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
+import { useTranscript, TranscriptSource } from "../hooks/useTranscript";
 
 const MODEL_KEY = "shiro_overlay_model";
 
@@ -21,6 +22,25 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 interface Message {
   role: "user" | "assistant";
   text: string;
+}
+
+function TranscriptRow({
+  source,
+  text,
+  live,
+}: {
+  source: TranscriptSource;
+  text: string;
+  live: boolean;
+}) {
+  const label = source === "me" ? "Me" : "Them";
+  const color = source === "me" ? "text-blue-300" : "text-emerald-300";
+  return (
+    <div className={`text-sm leading-snug ${live ? "text-white/50 italic" : "text-white/90"}`}>
+      <span className={`mr-2 text-[10px] uppercase tracking-wide ${color}`}>{label}</span>
+      {text}
+    </div>
+  );
 }
 
 const POS_KEY = "shiro_overlay_pos";
@@ -43,6 +63,7 @@ export default function OverlayWindow() {
   const { response, loading, error, query, reset } = useCaptureQuery();
   const { addEntry } = useHistory();
   const { templates } = useTemplates();
+  const transcript = useTranscript();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const appWindow = getCurrentWindow();
@@ -196,6 +217,19 @@ export default function OverlayWindow() {
           Shiro
         </span>
 
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => (transcript.listening ? transcript.stop() : transcript.start())}
+          title={transcript.listening ? "Stop listening" : "Listen to the call"}
+          className={`text-[10px] px-2 py-0.5 rounded-md border cursor-pointer ${
+            transcript.listening
+              ? "border-red-400/60 bg-red-500/30 text-red-100"
+              : "border-white/20 text-white/60 hover:text-white"
+          }`}
+        >
+          {transcript.listening ? "■ Stop" : "🎤 Listen"}
+        </button>
+
         {/* Model tier toggle */}
         <div
           onMouseDown={(e) => e.stopPropagation()}
@@ -269,10 +303,40 @@ export default function OverlayWindow() {
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3 min-h-0"
       >
-        {messages.length === 0 && !loading && (
+        {messages.length === 0 && transcript.lines.length === 0 && !loading && !transcript.listening && (
           <p className="text-white/30 text-xs text-center mt-8">
-            Ask anything about your screen
+            Ask anything about your screen, or listen to a call
           </p>
+        )}
+
+        {(transcript.listening || transcript.lines.length > 0 || transcript.error) && (
+          <div className="flex flex-col gap-1.5 pb-2 border-b border-white/10">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-white/40">
+                {transcript.status || "Call"}
+              </span>
+              {transcript.lines.length > 0 && (
+                <button
+                  onClick={transcript.clear}
+                  className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {transcript.lines.map((line) => (
+              <TranscriptRow key={line.id} source={line.source} text={line.text} live={false} />
+            ))}
+            {(["them", "me"] as TranscriptSource[]).map((source) => {
+              const text = transcript.partials[source];
+              return text ? (
+                <TranscriptRow key={source} source={source} text={text} live />
+              ) : null;
+            })}
+            {transcript.error && (
+              <div className="bg-red-500/20 rounded-lg px-3 py-2 text-sm text-red-300">{transcript.error}</div>
+            )}
+          </div>
         )}
 
         {messages.map((msg, i) => (
