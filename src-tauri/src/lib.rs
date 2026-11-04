@@ -342,7 +342,7 @@ pub fn run() {
         Arc::new(AnthropicProvider::new(""))
     };
 
-    let speech: Arc<dyn stt::SpeechEngine> = Arc::new(stt::MissingEngine);
+    let speech: Arc<dyn stt::SpeechEngine> = Arc::new(stt::DeepgramEngine);
     let state = Mutex::new(AppState {
         llm,
         last_screenshot: None,
