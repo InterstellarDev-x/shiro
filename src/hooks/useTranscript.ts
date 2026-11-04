@@ -5,6 +5,7 @@ import {
   DEFAULT_PHONON_MODEL,
   SPEECH_PROVIDER,
 } from "../speech/provider";
+import { loadCallSession } from "../callSession";
 
 export type TranscriptSource = "me" | "them";
 
@@ -35,6 +36,8 @@ export function useTranscript() {
     startingRef.current = true;
     setError(null);
     setStatus("Starting…");
+    setLines([]);
+    setPartials({});
     const channel = new Channel<TranscriptEvent>();
     channel.onmessage = (event) => {
       if (event.kind === "partial") {
@@ -68,6 +71,7 @@ export function useTranscript() {
       await invoke("start_listening", {
         apiKey: localStorage.getItem("api_key_deepgram") ?? "",
         model,
+        language: loadCallSession().language,
         channel,
       });
       setListening(true);

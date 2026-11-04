@@ -107,22 +107,89 @@ async fn capture_and_query(
         s.last_screenshot = Some(png_bytes.clone());
         s.llm.clone()
     };
+    let prompt = format!(
+        "A screenshot of the user's screen is attached as an image. Answer from what is visible in that image. Do not claim that no image was provided.\n\n{prompt}"
+    );
     run_query(png_bytes, prompt, channel, llm).await
 }
 
-/// Answer a live-call question from the transcript. No screenshot.
+/// Answer a live-call question, or write notes when `task` is "notes".
+/// The transcript may start with a session block (instructions, resume, reference).
+/// When `include_screen` is set, the current screen is sent with the question.
+/// A failed capture still answers from the transcript, and the warning is returned.
 #[tauri::command]
 async fn answer_call(
     transcript: String,
+    include_screen: Option<bool>,
+    task: Option<String>,
     channel: tauri::ipc::Channel<StreamChunk>,
     state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let llm = state.lock().await.llm.clone();
+    if task.as_deref() == Some("mock") {
+        let prompt = format!(
+            "You are the interviewer for this session. Ask exactly one new question based on the session and the transcript. \
+             Do not answer it. Do not add a preamble.\n\n\
+             {transcript}"
+        );
+        ask_text(prompt, channel, llm).await?;
+        return Ok(None);
+    }
+    if task.as_deref() == Some("notes") {
+        let prompt = format!(
+            "Write notes for this call. Use only what appears below. Include a short summary, the questions that were asked, and the next steps.\n\n\
+             {transcript}"
+        );
+        ask_text(prompt, channel, llm).await?;
+        return Ok(None);
+    }
+
+    let guidance = "A session block may include instructions, a resume, and reference notes. Follow that block. \
+         Answer only the latest question, using the answer style in the session. \
+         If no style is given, answer in one or two short sentences the user can say out loud.";
+
+    if include_screen.unwrap_or(false) {
+        match do_capture().await {
+            Ok(png_bytes) => {
+                state.lock().await.last_screenshot = Some(png_bytes.clone());
+                let prompt = format!(
+                    "You are helping the user on a live call. An image of their screen is attached to this message.\n\
+                     Lines labeled Me are the user. Lines labeled Them are the other person.\n\
+                     Use the attached image when the question is about something visible. Do not claim that no image was provided. {guidance}\n\n\
+                     {transcript}"
+                );
+                run_query(png_bytes, prompt, channel, llm).await?;
+                return Ok(None);
+            }
+            Err(error) => {
+                eprintln!("[shiro] call screen capture skipped: {error}");
+                let prompt = format!(
+                    "You are helping the user on a live call. Lines labeled Me are the user. Lines labeled Them are the other person.\n\
+                     {guidance}\n\n\
+                     {transcript}"
+                );
+                ask_text(prompt, channel, llm).await?;
+                return Ok(Some(format!(
+                    "The screen was not included. {error} This answer used the transcript only."
+                )));
+            }
+        }
+    }
+
     let prompt = format!(
         "You are helping the user on a live call. Lines labeled Me are the user. Lines labeled Them are the other person.\n\
-         Answer only the latest question, in one or two short sentences the user can say out loud.\n\n\
+         {guidance}\n\n\
          {transcript}"
     );
+    ask_text(prompt, channel, llm).await?;
+    Ok(None)
+}
+
+async fn ask_text(
+    prompt: String,
+    channel: tauri::ipc::Channel<StreamChunk>,
+    llm: Arc<dyn VisionLlm>,
+) -> Result<(), String> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
     let llm_task = tokio::spawn(async move { llm.ask(&prompt, tx).await });
     while let Some(chunk) = rx.recv().await {
@@ -146,6 +213,9 @@ async fn query_cached(
         let bytes = s.last_screenshot.clone().ok_or("No screenshot cached yet — ask once first")?;
         (bytes, s.llm.clone())
     };
+    let prompt = format!(
+        "A screenshot of the user's screen is attached as an image. Answer from what is visible in that image. Do not claim that no image was provided.\n\n{prompt}"
+    );
     run_query(png_bytes, prompt, channel, llm).await
 }
 
@@ -208,6 +278,7 @@ async fn set_provider(
 async fn start_listening(
     api_key: Option<String>,
     model: Option<String>,
+    language: Option<String>,
     channel: tauri::ipc::Channel<stt::TranscriptEvent>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
@@ -229,6 +300,7 @@ async fn start_listening(
             .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
             .unwrap_or_default(),
         model: model.unwrap_or_default(),
+        language: language.unwrap_or_else(|| "en".to_string()),
     };
     if speech.id() == "deepgram" && config.api_key.trim().is_empty() {
         eprintln!("[shiro] Deepgram key missing, so no audio will be sent");
@@ -269,6 +341,31 @@ async fn start_listening(
     session.push_task(forward);
     state.lock().await.session = Some(session);
     Ok(())
+}
+
+#[tauri::command]
+fn detect_meeting_app() -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-ax", "-o", "comm="])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let name = line.trim().to_lowercase();
+        if name.contains("zoom.us") || name.ends_with("/zoom") {
+            return Some("Zoom".into());
+        }
+        if name.contains("msteams") || name.contains("microsoft teams") {
+            return Some("Microsoft Teams".into());
+        }
+        if name.contains("webex") {
+            return Some("Webex".into());
+        }
+        if name.contains("google meet") {
+            return Some("Google Meet".into());
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -410,6 +507,7 @@ pub fn run() {
             start_listening,
             stop_listening,
             speech_engine_id,
+            detect_meeting_app,
         ])
         .setup(move |app| {
             // Register hotkey

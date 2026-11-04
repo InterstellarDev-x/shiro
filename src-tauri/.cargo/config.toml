@@ -1,7 +1,9 @@
 # macos-link.sh re-signs the shiro executable so the embedded Info.plist,
 # including NSMicrophoneUsageDescription, is actually registered with macOS.
+# The leading ./ makes Cargo resolve this next to the manifest instead of
+# searching PATH, which is why a bare "macos-link.sh" fails to compile.
 [target.aarch64-apple-darwin]
-linker = "macos-link.sh"
+linker = "./macos-link.sh"
 
 [target.x86_64-apple-darwin]
-linker = "macos-link.sh"
+linker = "./macos-link.sh"

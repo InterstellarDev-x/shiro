@@ -6,6 +6,9 @@ import { useCaptureQuery } from "../hooks/useCaptureQuery";
 import { useHistory } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
 import { useTranscript, TranscriptSource } from "../hooks/useTranscript";
+import { loadCallSession, withSession } from "../callSession";
+import { upsertSavedCall } from "../savedCalls";
+import MermaidChart from "../components/MermaidChart";
 
 const MODEL_KEY = "shiro_overlay_model";
 
@@ -50,6 +53,8 @@ function TranscriptRow({
   );
 }
 
+const SCREEN_KEY = "shiro_call_screen";
+const QUICK_KEY = "shiro_quick_context";
 const POS_KEY = "shiro_overlay_pos";
 const SIZE_KEY = "shiro_overlay_size";
 const OPACITY_KEY = "shiro_overlay_opacity";
@@ -66,6 +71,10 @@ export default function OverlayWindow() {
     () => (localStorage.getItem(MODEL_KEY) as ModelTier) ?? "fast"
   );
   const [hasCachedShot, setHasCachedShot] = useState(false);
+  const [includeScreen, setIncludeScreen] = useState(
+    () => localStorage.getItem(SCREEN_KEY) !== "0"
+  );
+  const [quick, setQuick] = useState(() => localStorage.getItem(QUICK_KEY) === "1");
 
   const { response, loading, error, query, reset } = useCaptureQuery();
   const { addEntry } = useHistory();
@@ -116,12 +125,33 @@ export default function OverlayWindow() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Auto-scroll to bottom as response streams
+  // Keep the latest line in view. Ignore the scroll events caused by our own pin,
+  // or a diagram resize looks like the user scrolled and the view jumps.
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [response, messages]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const stick = { current: true };
+    let pinning = false;
+    const onScroll = () => {
+      if (pinning) return;
+      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    };
+    const pin = () => {
+      if (!stick.current) return;
+      pinning = true;
+      el.scrollTop = el.scrollHeight;
+      pinning = false;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const observer = new ResizeObserver(pin);
+    const content = el.firstElementChild;
+    if (content) observer.observe(content);
+    pin();
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+    };
+  }, []);
 
   // Append streaming response as last assistant message
   useEffect(() => {
@@ -166,19 +196,36 @@ export default function OverlayWindow() {
 
   const linesRef = useRef(transcript.lines);
   linesRef.current = transcript.lines;
+  const includeScreenRef = useRef(includeScreen);
+  includeScreenRef.current = includeScreen;
+  const quickRef = useRef(quick);
+  quickRef.current = quick;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const callId = useRef<string | null>(null);
+  const [meetingApp, setMeetingApp] = useState<string | null>(null);
+  const dismissedMeeting = useRef<string | null>(null);
 
-  const requestAnswer = useCallback(async (source: TranscriptSource, text: string) => {
+  const requestAnswer = useCallback(async (source: TranscriptSource, text: string, force = false) => {
     const trimmed = text.trim();
     const key = `${source}:${trimmed}`;
-    if (!looksLikeQuestion(trimmed) || answeredIds.current.has(key) || answering.current) return;
-    answeredIds.current.add(key);
+    if (!trimmed || (!force && !looksLikeQuestion(trimmed)) || answeredIds.current.has(key) || answering.current) return;
+    if (!force) answeredIds.current.add(key);
     answering.current = true;
     const label = source === "me" ? "Me" : "Them";
-    const context = linesRef.current
-      .slice(-8)
-      .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
-      .join("\n");
-    const transcriptText = context.includes(trimmed) ? context : `${context}\n${label}: ${trimmed}`.trim();
+    const fast = quickRef.current;
+    const transcriptText = fast
+      ? `${label}: ${trimmed}`
+      : (() => {
+          const context = linesRef.current
+            .slice(-8)
+            .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
+            .join("\n");
+          return context.includes(trimmed) ? context : `${context}\n${label}: ${trimmed}`.trim();
+        })();
+    const payload = fast
+      ? `Answer in one short sentence the user can say out loud.${includeScreenRef.current ? " A screenshot of the user's screen is attached. Use what is visible in it." : ""}\n\n${transcriptText}`
+      : withSession(transcriptText);
     setMessages((prev) => [...prev, { role: "user", text: `${label}: ${trimmed}` }]);
     reset();
     try {
@@ -187,7 +234,7 @@ export default function OverlayWindow() {
       // The chat box already uses the model loaded in the app. Only switch
       // models when Settings has a key, so an empty value does not replace it.
       if (apiKey.trim()) await applyModelTier(modelTier);
-      await query(transcriptText, { text: true });
+      await query(payload, { text: true, screen: includeScreenRef.current, task: "answer" });
     } finally {
       answering.current = false;
       setAnswerTick((tick) => tick + 1);
@@ -203,6 +250,153 @@ export default function OverlayWindow() {
     if (line) void requestAnswer(line.source, line.text);
   }, [transcript.lines, transcript.listening, answerTick, requestAnswer]);
 
+  const writeNotes = async () => {
+    if (answering.current || loading) return;
+    const body = linesRef.current
+      .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
+      .join("\n");
+    if (!body.trim()) return;
+    answering.current = true;
+    setMessages((prev) => [...prev, { role: "user", text: "Call notes" }]);
+    reset();
+    try {
+      const provider = localStorage.getItem("provider") ?? "openai";
+      const apiKey = localStorage.getItem(`api_key_${provider}`) ?? "";
+      if (apiKey.trim()) await applyModelTier(modelTier);
+      await query(withSession(body), { text: true, screen: false, task: "notes" });
+    } finally {
+      answering.current = false;
+      saveActiveCall();
+    }
+  };
+
+  const saveActiveCall = () => {
+    if (!callId.current) return;
+    const session = loadCallSession();
+    const answers: { question: string; answer: string }[] = [];
+    const current = messagesRef.current;
+    for (let index = 0; index < current.length; index += 1) {
+      const message = current[index];
+      const next = current[index + 1];
+      if (message.role === "user" && next?.role === "assistant" && next.text.trim()) {
+        answers.push({ question: message.text, answer: next.text });
+      }
+    }
+    const notes = [...answers].reverse().find((item) => item.question === "Call notes")?.answer ?? "";
+    upsertSavedCall({
+      id: callId.current,
+      title: session.title.trim() || "Untitled call",
+      mode: session.mode,
+      style: session.style,
+      language: session.language,
+      startedAt: Number(callId.current.split("-")[0]) || Date.now(),
+      updatedAt: Date.now(),
+      lines: linesRef.current.map((line) => ({ source: line.source, text: line.text })),
+      answers,
+      notes,
+    });
+  };
+
+  const answerNow = () => {
+    const partial = transcript.partials.them || transcript.partials.me;
+    const line = linesRef.current[linesRef.current.length - 1];
+    if (partial?.trim()) {
+      void requestAnswer(transcript.partials.them ? "them" : "me", partial, true);
+      return;
+    }
+    if (line) void requestAnswer(line.source, line.text, true);
+  };
+
+  const askAboutCall = async () => {
+    const question = prompt.trim();
+    if (!question || loading || answering.current) return;
+    setPrompt("");
+    answering.current = true;
+    const fast = quickRef.current;
+    const body = fast
+      ? ""
+      : linesRef.current
+          .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
+          .join("\n");
+    setMessages((prev) => [...prev, { role: "user", text: question }]);
+    reset();
+    try {
+      const payload = fast
+        ? `Answer in one short sentence the user can say out loud.\n\nQuestion: ${question}`
+        : withSession(`${body}\nQuestion: ${question}`.trim());
+      await query(payload, { text: true, screen: false, task: "answer" });
+    } finally {
+      answering.current = false;
+      saveActiveCall();
+    }
+  };
+
+  const askMock = async () => {
+    if (loading || answering.current) return;
+    if (!callId.current) callId.current = `${Date.now()}-${crypto.randomUUID()}`;
+    answering.current = true;
+    const spoken = linesRef.current
+      .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
+      .join("\n");
+    const asked = messagesRef.current
+      .filter((item) => item.role === "assistant")
+      .slice(-4)
+      .map((item) => item.text)
+      .join("\n");
+    setMessages((prev) => [...prev, { role: "user", text: "Mock question" }]);
+    reset();
+    try {
+      const question = await query(
+        withSession(`${spoken}\n\nQuestions already asked:\n${asked}`.trim()),
+        { text: true, screen: false, task: "mock" },
+      );
+      if (question && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(question));
+      }
+    } finally {
+      answering.current = false;
+      saveActiveCall();
+    }
+  };
+
+  const beginListen = async () => {
+    callId.current = `${Date.now()}-${crypto.randomUUID()}`;
+    setMeetingApp(null);
+    await transcript.start();
+  };
+
+  useEffect(() => {
+    if (!callId.current || transcript.lines.length === 0) return;
+    saveActiveCall();
+  }, [transcript.lines, messages]);
+
+  useEffect(() => {
+    if (transcript.listening) return;
+    let cancelled = false;
+    const look = async () => {
+      try {
+        const name = await invoke<string | null>("detect_meeting_app");
+        if (cancelled) return;
+        if (!name) {
+          dismissedMeeting.current = null;
+          setMeetingApp(null);
+          return;
+        }
+        if (dismissedMeeting.current !== name) setMeetingApp(name);
+      } catch {
+        if (!cancelled) setMeetingApp(null);
+      }
+    };
+    void look();
+    const timer = window.setInterval(() => void look(), 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [transcript.listening]);
+
+  const sessionTitle = loadCallSession().title;
 
   const handleTierChange = async (tier: ModelTier) => {
     setModelTier(tier);
@@ -269,7 +463,7 @@ export default function OverlayWindow() {
 
         <button
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => (transcript.listening ? transcript.stop() : transcript.start())}
+          onClick={() => (transcript.listening ? transcript.stop() : void beginListen())}
           title={transcript.listening ? "Stop listening" : "Listen to the call"}
           className={`text-[10px] px-2 py-0.5 rounded-md border cursor-pointer ${
             transcript.listening
@@ -278,6 +472,40 @@ export default function OverlayWindow() {
           }`}
         >
           {transcript.listening ? "■ Stop" : "🎤 Listen"}
+        </button>
+
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            const next = !includeScreen;
+            setIncludeScreen(next);
+            localStorage.setItem(SCREEN_KEY, next ? "1" : "0");
+          }}
+          title={includeScreen ? "Call answers include the screen" : "Call answers use the transcript only"}
+          className={`text-[10px] px-2 py-0.5 rounded-md border cursor-pointer ${
+            includeScreen
+              ? "border-emerald-400/60 bg-emerald-500/30 text-emerald-100"
+              : "border-white/20 text-white/60 hover:text-white"
+          }`}
+        >
+          {includeScreen ? "🖥 On" : "🖥 Off"}
+        </button>
+
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => {
+            const next = !quick;
+            setQuick(next);
+            localStorage.setItem(QUICK_KEY, next ? "1" : "0");
+          }}
+          title={quick ? "Fast reply: latest line only, no screen" : "Full reply: recent transcript, session, and screen"}
+          className={`text-[10px] px-2 py-0.5 rounded-md border cursor-pointer ${
+            quick
+              ? "border-amber-400/60 bg-amber-500/30 text-amber-100"
+              : "border-white/20 text-white/60 hover:text-white"
+          }`}
+        >
+          {quick ? "Quick" : "Full"}
         </button>
 
         {/* Model tier toggle */}
@@ -349,29 +577,77 @@ export default function OverlayWindow() {
       )}
 
       {/* Conversation messages */}
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3 min-h-0"
-      >
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
+        <div className="px-3 py-2 flex flex-col gap-3">
+        {meetingApp && !transcript.listening && (
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/15 px-3 py-2 text-xs text-emerald-100">
+            <span>{meetingApp} is open.</span>
+            <span className="flex gap-2">
+              <button onClick={() => void beginListen()} className="underline cursor-pointer">Listen</button>
+              <button
+                onClick={() => {
+                  dismissedMeeting.current = meetingApp;
+                  setMeetingApp(null);
+                }}
+                className="text-white/50 cursor-pointer"
+              >
+                Not now
+              </button>
+            </span>
+          </div>
+        )}
+
         {messages.length === 0 && transcript.lines.length === 0 && !loading && !transcript.listening && (
-          <p className="text-white/30 text-xs text-center mt-8">
-            Ask anything about your screen, or listen to a call
-          </p>
+          <div className="flex flex-col items-center gap-2 mt-8">
+            <p className="text-white/30 text-xs text-center">
+              Ask anything about your screen, or listen to a call
+            </p>
+            <button
+              onClick={() => void askMock()}
+              disabled={loading}
+              className="text-[10px] text-white/50 hover:text-white cursor-pointer"
+            >
+              Start a mock interview
+            </button>
+          </div>
         )}
 
         {(transcript.listening || transcript.lines.length > 0 || transcript.error) && (
           <div className="flex flex-col gap-1.5 pb-2 border-b border-white/10">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-wide text-white/40">
-                {transcript.status || "Call"}
+              <span className="text-[10px] uppercase tracking-wide text-white/40 truncate">
+                {sessionTitle || transcript.status || "Call"}
               </span>
-              {transcript.lines.length > 0 && (
-                <button
-                  onClick={transcript.clear}
-                  className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer"
-                >
-                  Clear
-                </button>
+              {(transcript.listening || transcript.lines.length > 0) && (
+                <span className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={answerNow}
+                    disabled={loading}
+                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
+                  >
+                    Answer
+                  </button>
+                  <button
+                    onClick={() => void askMock()}
+                    disabled={loading}
+                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
+                  >
+                    Mock
+                  </button>
+                  <button
+                    onClick={() => void writeNotes()}
+                    disabled={loading}
+                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
+                  >
+                    Notes
+                  </button>
+                  <button
+                    onClick={transcript.clear}
+                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </span>
               )}
             </div>
             {transcript.lines.map((line) => (
@@ -389,7 +665,9 @@ export default function OverlayWindow() {
           </div>
         )}
 
-        {messages.map((msg, i) => (
+        {messages.map((msg, i) => {
+          const streaming = loading && i === messages.length - 1;
+          return (
           <div
             key={i}
             className={`flex flex-col gap-0.5 ${msg.role === "user" ? "items-end" : "items-start"}`}
@@ -407,6 +685,9 @@ export default function OverlayWindow() {
                   components={{
                     code({ className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className ?? "");
+                      if (match?.[1] === "mermaid") {
+                        return <MermaidChart chart={String(children).replace(/\n$/, "")} live={streaming} />;
+                      }
                       return match ? (
                         <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div" className="rounded text-xs my-1">
                           {String(children).replace(/\n$/, "")}
@@ -425,7 +706,8 @@ export default function OverlayWindow() {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
 
         {loading && messages[messages.length - 1]?.role === "user" && (
           <div className="flex flex-col gap-0.5 items-start">
@@ -439,6 +721,7 @@ export default function OverlayWindow() {
         {error && (
           <div className="bg-red-500/20 rounded-lg px-3 py-2 text-sm text-red-300">{error}</div>
         )}
+        </div>
       </div>
 
       {/* Template pills */}
@@ -484,6 +767,14 @@ export default function OverlayWindow() {
             className="rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-medium px-3 py-1.5 transition-colors border border-white/20"
           >
             ↩ Re-ask
+          </button>
+          <button
+            onClick={() => void askAboutCall()}
+            disabled={loading || !prompt.trim()}
+            title="Ask using the call transcript, without a new screenshot"
+            className="rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-medium px-3 py-1.5 transition-colors border border-white/20"
+          >
+            Call
           </button>
         </div>
       </div>

@@ -1,50 +1,59 @@
 # Shiro
 
-A screen-to-LLM desktop assistant: a global hotkey captures the screen, sends
-it to a vision LLM (Anthropic or OpenAI), and streams the answer back in an
-always-on-top overlay — one that is deliberately invisible to screen
-recording and sharing tools.
+Shiro is a desktop overlay for live calls. It listens, answers questions while the call is still going, and can include what is on your screen. The overlay is kept out of screen capture.
 
-Built with Tauri (Rust core, React/TypeScript UI).
-
-## Why the capture-exclusion matters
-
-Shiro's overlay sits on top of everything else on screen. Without special
-handling, any screen share (Meet, Discord, OBS) or screenshot tool would
-capture the overlay along with the rest of the desktop — defeating the
-point of an assistant meant to stay private to the user. On Windows, the
-Rust core calls `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`
-directly via the `user32` API so the OS's own compositor excludes the
-window from any capture surface. The reasoning is written up in full in
-[`docs/capture-exclusion.md`](docs/capture-exclusion.md), including how the
-Windows display pipeline (app → DWM → GPU compositor) actually works.
-
-## How it works
-
-1. A global shortcut (`tauri-plugin-global-shortcut`) triggers a capture.
-2. `capture.rs` grabs the primary screen off the main thread (`spawn_blocking`, so the async runtime isn't stalled by the capture call).
-3. The PNG bytes go to `llm.rs`, which dispatches to whichever vision provider is configured (`AnthropicProvider` / `OpenAiProvider`) behind a shared `VisionLlm` trait, and streams the response back as `StreamChunk`s.
-4. The React side renders two windows — `MainWindow` and `OverlayWindow` — plus hooks for capture queries, history, saved templates, and speech input.
-5. A tray icon (`TrayIconBuilder`) keeps the app reachable without a dock/taskbar presence.
-
-## Stack
-
-- **Core**: Rust, Tauri 2, `tokio`, raw Win32 FFI for capture exclusion.
-- **UI**: React, TypeScript, Vite.
-
-## Running it
+## Run it
 
 ```bash
-npm install   # or bun install
+npm install
 npm run tauri dev
 ```
 
-Requires a vision LLM credential as an environment variable: `ANTHROPIC_API_KEY`
-(preferred) or `OPENAI_API_KEY` (with an optional `OPENAI_BASE_URL` override
-for OpenAI-compatible endpoints).
+On macOS the dev app relaunches as `Shiro.app` so microphone and screen recording permissions attach to Shiro, not to the terminal.
 
-## Status
+A release build is at `src-tauri/target/release/bundle/macos/shiro.app` after `npm run tauri build`.
 
-Capture exclusion and the vision LLM round-trip both work end to end on
-Windows; this is a personal tool, not yet packaged for distribution or
-tested on macOS/Linux capture APIs.
+## First-time setup
+
+1. Open the main Shiro window and choose **Settings**.
+2. Pick Anthropic or OpenAI, paste the API key, and press **Save**.
+3. Paste a Deepgram API key under **Call transcription**.
+4. Press **Listen** in the overlay. Allow the microphone prompt.
+5. For the other person's audio and for screenshots, turn on Shiro in **System Settings → Privacy & Security → Screen Recording**, then quit and open Shiro again.
+
+If the Settings panel is taller than the window, scroll inside the panel. You do not need to fullscreen the app.
+
+## A call
+
+1. In the main window, fill in **Call session**: title, Meeting or Interview, and Spoken, Script, or Coding.
+2. Interview mode can include a résumé. Reference notes and a text or PDF file are sent with full answers.
+3. Pick the call language. That language is sent to Deepgram.
+4. Open the overlay with `Ctrl+Shift+0`.
+5. Press **Listen**. Your microphone is labeled Me. System audio is labeled Them.
+6. A question in the transcript is answered on its own. **Answer** replies to the latest line even when it is not a question.
+7. **Call** answers a typed question from the transcript and does not take a new screenshot. **📷 Ask** captures the screen and sends that picture.
+8. **🖥 On** attaches a screenshot to spoken answers. **Quick** sends only the latest line. **Full** sends the session, the résumé, the notes, and the last eight lines. **⚡ Fast** and **🧠 Smart** choose the model.
+9. **Notes** writes a summary, the questions, and the next steps.
+10. **Mock** asks one interview question out loud from the session. Press it again for the next question.
+
+The call is saved on the main window under **Calls**. Open it to read the transcript, the answers, and the notes. The sidebar line is only the title and a preview.
+
+## Screen and diagrams
+
+**🖥 On** and **📷 Ask** both send a screenshot of the primary display, scaled so the longest edge is 1280 pixels. Shiro's own overlay is excluded from that capture. Quick mode still attaches the screenshot when **🖥 On** is selected. If the reply says no image arrived, confirm Screen Recording is enabled for this copy of Shiro and look for a warning under the answer. A new build is a new app identity, so macOS asks again.
+
+**Script** mode can end a system-design answer with a flowchart. The chart is drawn after the answer finishes, so the transcript stays put. A chart that is not valid stays as text.
+
+## If something fails
+
+| What you see | What to do |
+| --- | --- |
+| Shiro is missing from the microphone list | Quit it and start it again from `Shiro.app`, then press Listen and choose Allow. |
+| The other person's audio failed, or the screenshot is blank | Turn on Screen Recording for Shiro, then restart Shiro. |
+| `Command answer_call not found` | An older Shiro is still open. Quit every copy and start this build. |
+| Deepgram shows no audio | The Deepgram key in Settings is empty, or Listen was started before the key was saved. |
+| The overlay jumps when a diagram appears | Reload the overlay. Charts now draw once, after the answer is done. |
+| Settings are cut off | Scroll the settings panel. The main window scrolls the same way. |
+| A saved call shows a title and no transcript | That call was saved before anyone finished a line. Listen again and let a line finish; open the call from the main window to see the transcript and answers. |
+
+Zoom, Teams, Webex, or the Google Meet app can prompt the overlay to listen. A Meet tab inside Chrome is not detected.

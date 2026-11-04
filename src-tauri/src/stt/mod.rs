@@ -28,6 +28,7 @@ pub enum TranscriptEvent {
 pub struct SpeechConfig {
     pub api_key: String,
     pub model: String,
+    pub language: String,
 }
 
 /// One live transcription implementation. `speech-base` ships the empty engine.

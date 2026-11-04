@@ -4,6 +4,8 @@ import { useCaptureQuery } from "../hooks/useCaptureQuery";
 import { DEFAULT_DEEPGRAM_MODEL, DEFAULT_PHONON_MODEL, SPEECH_PROVIDER } from "../speech/provider";
 import { useHistory, HistoryEntry } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
+import CallSessionForm from "../components/CallSessionForm";
+import { listSavedCalls, SavedCall } from "../savedCalls";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -101,8 +103,8 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-xl p-6 flex flex-col gap-5">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4">
+      <div className="my-auto w-full max-w-md max-h-full overflow-y-auto rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-xl p-6 flex flex-col gap-5">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Settings</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 text-lg leading-none">✕</button>
@@ -359,6 +361,25 @@ export default function MainWindow() {
   const { response, loading, error, query, reset } = useCaptureQuery();
   const { history, addEntry, clearHistory } = useHistory();
   const [prompt, setPrompt] = useState("");
+  const [calls, setCalls] = useState<SavedCall[]>(() => listSavedCalls());
+  const [selectedCall, setSelectedCall] = useState<SavedCall | null>(null);
+
+  useEffect(() => {
+    const sync = () => setCalls(listSavedCalls());
+    window.addEventListener("storage", sync);
+    window.addEventListener("focus", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("focus", sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedCall((current) => {
+      if (!current) return null;
+      return calls.find((call) => call.id === current.id) ?? current;
+    });
+  }, [calls]);
 
   const handleQuery = async () => {
     if (!prompt.trim() || loading) return;
@@ -373,7 +394,7 @@ export default function MainWindow() {
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} onHotkeyChange={setHotkey} />}
 
       {/* History sidebar */}
-      <aside className="w-56 shrink-0 flex flex-col border-r border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950">
+      <aside className="flex w-56 min-h-0 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950">
         <div className="flex items-center justify-between px-3 py-3 border-b border-zinc-200 dark:border-zinc-700">
           <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">History</span>
           {history.length > 0 && (
@@ -386,13 +407,17 @@ export default function MainWindow() {
           )}
         </div>
         <div className="flex-1 overflow-y-auto">
+          <p className="px-3 pt-3 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">Captures</p>
           {history.length === 0 ? (
             <p className="text-xs text-zinc-400 px-3 py-4 text-center">No captures yet</p>
           ) : (
             history.map((entry) => (
               <button
                 key={entry.id}
-                onClick={() => setSelectedEntry(entry)}
+                onClick={() => {
+                  setSelectedCall(null);
+                  setSelectedEntry(entry);
+                }}
                 className={`w-full text-left px-3 py-2.5 border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors ${
                   selectedEntry?.id === entry.id ? "bg-blue-50 dark:bg-blue-950 border-l-2 border-l-blue-500" : ""
                 }`}
@@ -402,11 +427,34 @@ export default function MainWindow() {
               </button>
             ))
           )}
+          <p className="px-3 pt-4 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">Calls</p>
+          {calls.length === 0 ? (
+            <p className="text-xs text-zinc-400 px-3 py-2">No saved calls yet</p>
+          ) : (
+            calls.map((call) => (
+              <button
+                key={call.id}
+                onClick={() => {
+                  setSelectedEntry(null);
+                  setSelectedCall(call);
+                }}
+                className={`w-full text-left px-3 py-2.5 border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors ${
+                  selectedCall?.id === call.id ? "bg-blue-50 dark:bg-blue-950 border-l-2 border-l-blue-500" : ""
+                }`}
+              >
+                <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300 truncate">{call.title}</p>
+                <p className="text-[10px] text-zinc-400 mt-0.5 truncate">
+                  {timeAgo(call.updatedAt)} · {call.lines.length} lines
+                  {call.lines.length > 0 ? ` · ${call.lines[call.lines.length - 1].text}` : ""}
+                </p>
+              </button>
+            ))
+          )}
         </div>
       </aside>
 
       {/* Main content */}
-      <div className="flex flex-col flex-1 min-w-0 p-5 gap-4">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
         {/* Header */}
         <div className="flex items-center justify-between shrink-0">
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Shiro</h1>
@@ -428,11 +476,54 @@ export default function MainWindow() {
 
         <hr className="border-zinc-200 dark:border-zinc-700 shrink-0" />
 
-        {/* History detail or current query */}
-        {selectedEntry ? (
+        {/* A saved call fills the pane so the transcript is visible in a short window. */}
+        {selectedCall ? (
+          <div className="flex min-h-[280px] flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setSelectedCall(null)} className="text-sm text-zinc-500 hover:text-zinc-800">← Back</button>
+              <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">{selectedCall.title}</h2>
+              <span className="text-xs text-zinc-400">{selectedCall.mode} · {selectedCall.language}</span>
+            </div>
+            <section className="flex flex-col gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Transcript</h3>
+              {selectedCall.lines.length === 0 ? (
+                <p className="text-sm text-zinc-400">No transcript was saved for this call.</p>
+              ) : (
+                selectedCall.lines.map((line, index) => (
+                  <p key={index} className="text-sm text-zinc-800 dark:text-zinc-200">
+                    <span className={line.source === "me" ? "text-blue-500" : "text-emerald-600"}>
+                      {line.source === "me" ? "Me" : "Them"}:
+                    </span>{" "}
+                    {line.text}
+                  </p>
+                ))
+              )}
+            </section>
+            {selectedCall.answers.filter((item) => item.question !== "Call notes").length > 0 && (
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Answers</h3>
+                {selectedCall.answers.filter((item) => item.question !== "Call notes").map((item, index) => (
+                  <div key={index} className="rounded-lg border border-zinc-200 dark:border-zinc-700 p-3 text-sm">
+                    <p className="text-zinc-500">{item.question}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-zinc-800 dark:text-zinc-100">{item.answer}</p>
+                  </div>
+                ))}
+              </section>
+            )}
+            {selectedCall.notes && (
+              <section className="flex flex-col gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Notes</h3>
+                <div className="whitespace-pre-wrap rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
+                  {selectedCall.notes}
+                </div>
+              </section>
+            )}
+          </div>
+        ) : selectedEntry ? (
           <HistoryDetail entry={selectedEntry} onBack={() => setSelectedEntry(null)} />
         ) : (
           <>
+            <CallSessionForm />
             <div className="flex gap-2 shrink-0">
               <input
                 value={prompt}

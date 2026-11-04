@@ -12,7 +12,7 @@ export function useCaptureQuery() {
   const [error, setError] = useState<string | null>(null);
   const fullResponse = useRef("");
 
-  const query = useCallback(async (prompt: string, opts?: { cached?: boolean; text?: boolean }): Promise<string> => {
+  const query = useCallback(async (prompt: string, opts?: { cached?: boolean; text?: boolean; screen?: boolean; task?: "answer" | "notes" | "mock" }): Promise<string> => {
     setLoading(true);
     setResponse("");
     setError(null);
@@ -45,7 +45,13 @@ export function useCaptureQuery() {
 
     try {
       const cmd = opts?.cached ? "query_cached" : opts?.text ? "answer_call" : "capture_and_query";
-      await invoke(cmd, opts?.text ? { transcript: prompt, channel } : { prompt, channel });
+      const notice = await invoke<string | null>(
+        cmd,
+        opts?.text
+          ? { transcript: prompt, includeScreen: Boolean(opts.screen) && opts.task !== "notes", task: opts.task ?? "answer", channel }
+          : { prompt, channel },
+      );
+      if (notice) setError(notice);
     } catch (e) {
       setError(String(e));
       setLoading(false);

@@ -34,8 +34,9 @@ impl SpeechEngine for DeepgramEngine {
             config.model.trim()
         });
 
+        let language = sanitize_language(&config.language);
         let url = format!(
-            "wss://api.deepgram.com/v1/listen?model={model}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=400&punctuate=true&smart_format=true&vad_events=true&utterance_end_ms=1200&mip_opt_out=true"
+            "wss://api.deepgram.com/v1/listen?model={model}&language={language}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=400&punctuate=true&smart_format=true&vad_events=true&utterance_end_ms=1200&mip_opt_out=true"
         );
         let mut request = url
             .into_client_request()
@@ -112,6 +113,14 @@ impl SpeechEngine for DeepgramEngine {
             .await;
         Ok(())
     }
+}
+
+fn sanitize_language(language: &str) -> String {
+    let cleaned: String = language
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect();
+    if cleaned.is_empty() { "en".to_string() } else { cleaned }
 }
 
 fn sanitize_model(model: &str) -> String {
