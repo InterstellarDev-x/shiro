@@ -15,25 +15,6 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
-// Capture exclusion (Windows only)
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-fn exclude_from_capture(hwnd: isize) {
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowDisplayAffinity(hwnd: isize, affinity: u32) -> i32;
-    }
-    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
-    unsafe {
-        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
-    }
-}
-
-#[cfg(not(windows))]
-fn exclude_from_capture(_hwnd: isize) {}
-
-// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -51,6 +32,39 @@ async fn do_capture() -> Result<Vec<u8>, String> {
         .await
         .map_err(|e| format!("Capture task panicked: {e}"))?
 }
+
+fn prepare_overlay_window(overlay: &tauri::WebviewWindow) {
+    let _ = overlay.set_always_on_top(true);
+    configure_overlay_for_macos_fullscreen(overlay);
+}
+
+fn show_overlay_window(overlay: &tauri::WebviewWindow) {
+    prepare_overlay_window(overlay);
+    let _ = overlay.show();
+    let _ = overlay.set_focus();
+}
+
+#[cfg(target_os = "macos")]
+fn configure_overlay_for_macos_fullscreen(overlay: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let Ok(ns_window_ptr) = overlay.ns_window() else {
+        return;
+    };
+
+    unsafe {
+        let ns_window = &*ns_window_ptr.cast::<NSWindow>();
+        let behavior = ns_window.collectionBehavior()
+            | NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Transient
+            | NSWindowCollectionBehavior::IgnoresCycle;
+        ns_window.setCollectionBehavior(behavior);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_overlay_for_macos_fullscreen(_overlay: &tauri::WebviewWindow) {}
 
 // ---------------------------------------------------------------------------
 // Tauri commands
@@ -176,7 +190,7 @@ async fn set_hotkey(
         if let Some(overlay) = handle.get_webview_window("overlay") {
             let visible = overlay.is_visible().unwrap_or(false);
             if visible { let _ = overlay.hide(); }
-            else { let _ = overlay.show(); let _ = overlay.set_focus(); }
+            else { show_overlay_window(&overlay); }
         }
     }).map_err(|e| format!("Register failed: {e}"))?;
 
@@ -276,24 +290,13 @@ pub fn run() {
             // Register hotkey
             let handle = app.handle().clone();
             app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-                if event.state() != ShortcutState::Pressed { return; }
-                if let Some(overlay) = handle.get_webview_window("overlay") {
-                    let visible = overlay.is_visible().unwrap_or(false);
-                    if visible { let _ = overlay.hide(); }
-                    else { let _ = overlay.show(); let _ = overlay.set_focus(); }
-                }
-            })?;
-
-            // Exclude overlay from screen capture (Windows)
-            #[cfg(windows)]
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                if let Ok(handle) = overlay.window_handle() {
-                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                        exclude_from_capture(h.hwnd.get() as isize);
-                    }
-                }
+            if event.state() != ShortcutState::Pressed { return; }
+            if let Some(overlay) = handle.get_webview_window("overlay") {
+                let visible = overlay.is_visible().unwrap_or(false);
+                if visible { let _ = overlay.hide(); }
+                else { show_overlay_window(&overlay); }
             }
+        })?;
 
             // System tray
             let show_main = MenuItem::with_id(app, "show_main", "Open Shiro", true, None::<&str>)?;
@@ -301,8 +304,8 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_main, &show_overlay, &quit])?;
 
-            let icon = Image::from_path("icons/32x32.png")
-                .unwrap_or_else(|_| Image::from_bytes(&[]).unwrap());
+            let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                .expect("embedded tray icon must be a valid PNG");
 
             let tray_handle = app.handle().clone();
             TrayIconBuilder::new()
@@ -319,8 +322,7 @@ pub fn run() {
                         }
                         "show_overlay" => {
                             if let Some(w) = tray_handle.get_webview_window("overlay") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                                show_overlay_window(&w);
                             }
                         }
                         "quit" => std::process::exit(0),
@@ -339,6 +341,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                prepare_overlay_window(&overlay);
+            }
 
             // Hide main window on close instead of quitting
             let main_win = app.get_webview_window("main").unwrap();
