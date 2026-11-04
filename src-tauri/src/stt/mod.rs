@@ -46,6 +46,7 @@ pub trait SpeechEngine: Send + Sync {
     ) -> Result<(), String>;
 }
 
+#[allow(dead_code)]
 pub struct MissingEngine;
 
 #[async_trait]

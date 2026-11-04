@@ -26,6 +26,9 @@ pub struct AppState {
     pub last_screenshot: Option<Vec<u8>>,
     pub speech: Arc<dyn stt::SpeechEngine>,
     pub session: Option<listen::ListenSession>,
+    /// One Listen at a time. Opening the microphone blocks, so a second click
+    /// used to start another session and then report "Already listening".
+    pub listen_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,30 @@ async fn capture_and_query(
     run_query(png_bytes, prompt, channel, llm).await
 }
 
+/// Answer a live-call question from the transcript. No screenshot.
+#[tauri::command]
+async fn answer_call(
+    transcript: String,
+    channel: tauri::ipc::Channel<StreamChunk>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let llm = state.lock().await.llm.clone();
+    let prompt = format!(
+        "You are helping the user on a live call. Lines labeled Me are the user. Lines labeled Them are the other person.\n\
+         Answer only the latest question, in one or two short sentences the user can say out loud.\n\n\
+         {transcript}"
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
+    let llm_task = tokio::spawn(async move { llm.ask(&prompt, tx).await });
+    while let Some(chunk) = rx.recv().await {
+        channel
+            .send(chunk)
+            .map_err(|e| format!("Channel send failed: {e}"))?;
+    }
+    llm_task.await.map_err(|e| format!("LLM task panicked: {e}"))??;
+    Ok(())
+}
+
 /// Re-use the last cached screenshot — no new capture.
 #[tauri::command]
 async fn query_cached(
@@ -184,13 +211,11 @@ async fn start_listening(
     channel: tauri::ipc::Channel<stt::TranscriptEvent>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
-    let speech = {
+    let (speech, gate) = {
         let app = state.lock().await;
-        if app.session.is_some() {
-            return Err("Already listening".into());
-        }
-        app.speech.clone()
+        (app.speech.clone(), app.listen_lock.clone())
     };
+    let _guard = gate.lock().await;
     if speech.id() == "none" {
         return Err(
             "This build has no speech engine. Switch to the speech-deepgram or speech-phonon branch."
@@ -200,16 +225,35 @@ async fn start_listening(
 
     let config = stt::SpeechConfig {
         api_key: api_key
-            .filter(|key| !key.is_empty())
+            .filter(|key| !key.trim().is_empty())
             .or_else(|| std::env::var("DEEPGRAM_API_KEY").ok())
             .unwrap_or_default(),
         model: model.unwrap_or_default(),
     };
+    if speech.id() == "deepgram" && config.api_key.trim().is_empty() {
+        eprintln!("[shiro] Deepgram key missing, so no audio will be sent");
+        return Err(
+            "Add a Deepgram API key in the main Shiro window under Settings, or set DEEPGRAM_API_KEY."
+                .into(),
+        );
+    }
+    if speech.id() == "deepgram" {
+        eprintln!(
+            "[shiro] Deepgram key is present ({} characters)",
+            config.api_key.trim().len()
+        );
+    }
+
+    let previous = state.lock().await.session.take();
+    if let Some(previous) = previous {
+        previous.shutdown().await;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(128);
     let forward = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if channel.send(event).is_err() {
+                eprintln!("[shiro] transcript channel closed");
                 break;
             }
         }
@@ -223,13 +267,7 @@ async fn start_listening(
         }
     };
     session.push_task(forward);
-    let mut app = state.lock().await;
-    if app.session.is_some() {
-        drop(app);
-        session.shutdown().await;
-        return Err("Already listening".into());
-    }
-    app.session = Some(session);
+    state.lock().await.session = Some(session);
     Ok(())
 }
 
@@ -330,6 +368,7 @@ fn parse_shortcut(s: &str) -> Option<Shortcut> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    audio::log_microphone_access();
     let llm: Arc<dyn VisionLlm> = if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         Arc::new(AnthropicProvider::new(key))
     } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
@@ -348,6 +387,7 @@ pub fn run() {
         last_screenshot: None,
         speech,
         session: None,
+        listen_lock: Arc::new(tokio::sync::Mutex::new(())),
     });
 
     let default_hotkey = "Ctrl+Shift+0";
@@ -360,6 +400,7 @@ pub fn run() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             capture_and_query,
+            answer_call,
             query_cached,
             debug_capture,
             set_provider,

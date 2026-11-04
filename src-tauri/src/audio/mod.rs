@@ -21,3 +21,7 @@ pub fn start_microphone(tx: Sender<RawAudio>) -> Result<MicStream, String> {
 pub fn start_system_audio(tx: Sender<RawAudio>) -> Result<SystemCapture, String> {
     system::start(tx)
 }
+
+pub fn log_microphone_access() {
+    mic::log_microphone_access();
+}

@@ -48,23 +48,43 @@ pub async fn start_session(
     let (stop_tx, stop_rx) = watch::channel(false);
     let stop_flag = Arc::new(AtomicBool::new(false));
 
+    let _ = events
+        .send(TranscriptEvent::Status {
+            message: "Allow microphone access if macOS asks.".into(),
+        })
+        .await;
+
     let (me_tx, me_rx) = mpsc::channel(32);
     let (them_tx, them_rx) = mpsc::channel(32);
     let (mic_raw_tx, mic_raw_rx) = crossbeam_channel::bounded::<RawAudio>(64);
     let (sys_raw_tx, sys_raw_rx) = crossbeam_channel::bounded::<RawAudio>(64);
 
-    let mic = start_microphone(mic_raw_tx)?;
-    let system = match start_system_audio(sys_raw_tx) {
-        Ok(system) => system,
+    let mic = tokio::task::spawn_blocking(move || start_microphone(mic_raw_tx))
+        .await
+        .map_err(|error| format!("Microphone task failed: {error}"))??;
+    let system = match tokio::task::spawn_blocking(move || start_system_audio(sys_raw_tx)).await {
+        Ok(Ok(system)) => Some(system),
+        Ok(Err(error)) => {
+            eprintln!("[shiro] system audio unavailable: {error}");
+            let _ = events
+                .send(TranscriptEvent::Error {
+                    message: error,
+                })
+                .await;
+            None
+        }
         Err(error) => {
-            drop(mic);
-            return Err(error);
+            let message = format!("System audio task failed: {error}");
+            eprintln!("[shiro] {message}");
+            let _ = events
+                .send(TranscriptEvent::Error { message })
+                .await;
+            None
         }
     };
 
     let mut threads = Vec::new();
     threads.push(spawn_bridge(mic_raw_rx, me_tx, stop_flag.clone()));
-    threads.push(spawn_bridge(sys_raw_rx, them_tx, stop_flag.clone()));
 
     let mut tasks = Vec::new();
     tasks.push(spawn_engine(
@@ -75,14 +95,17 @@ pub async fn start_session(
         events.clone(),
         stop_rx.clone(),
     ));
-    tasks.push(spawn_engine(
-        engine,
-        AudioSource::Them,
-        config,
-        them_rx,
-        events.clone(),
-        stop_rx,
-    ));
+    if system.is_some() {
+        threads.push(spawn_bridge(sys_raw_rx, them_tx, stop_flag.clone()));
+        tasks.push(spawn_engine(
+            engine,
+            AudioSource::Them,
+            config,
+            them_rx,
+            events.clone(),
+            stop_rx,
+        ));
+    }
 
     let _ = events
         .send(TranscriptEvent::Status {
@@ -94,7 +117,7 @@ pub async fn start_session(
         stop_flag,
         stop_tx,
         mic: Some(mic),
-        system: Some(system),
+        system,
         threads,
         tasks,
     })
@@ -110,9 +133,14 @@ fn spawn_bridge(
         .spawn(move || {
             let mut resampler: Option<LinearResampler> = None;
             let mut rate = 0u32;
+            let mut heard = false;
             while !stop.load(Ordering::Relaxed) {
                 match raw_rx.recv_timeout(Duration::from_millis(200)) {
                     Ok(chunk) => {
+                        if !heard && chunk.samples.iter().any(|sample| sample.abs() > 0.02) {
+                            heard = true;
+                            eprintln!("[shiro] audio is arriving");
+                        }
                         if resampler.is_none() || rate != chunk.sample_rate {
                             rate = chunk.sample_rate;
                             resampler = Some(LinearResampler::new(rate, TARGET_RATE));
@@ -146,6 +174,7 @@ fn spawn_engine(
 ) -> TaskHandle<()> {
     tokio::spawn(async move {
         if let Err(error) = engine.run_source(source, config, audio, events.clone(), stop).await {
+            eprintln!("[shiro] {source:?} transcription failed: {error}");
             let _ = events
                 .send(TranscriptEvent::Error {
                     message: error,

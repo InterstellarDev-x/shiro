@@ -44,14 +44,21 @@ async-trait = "0.1"
 cpal = "0.15"
 crossbeam-channel = "0.5"
 
-# Streaming speech WebSocket (Deepgram on this branch)
+# Streaming speech WebSocket (Deepgram on this branch).
+# rustls 0.23 does not pick a crypto backend unless exactly one is enabled.
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", features = ["ring"] }
 
 [profile.release]
 opt-level = "s"   # optimize for binary size
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSWindow"] }
+objc2-av-foundation = { version = "0.3.2", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6.2"
+coreaudio-rs = "0.11.3"
+libc = "0.2"
 screencapturekit = "11"
 
 [target.'cfg(windows)'.dependencies]

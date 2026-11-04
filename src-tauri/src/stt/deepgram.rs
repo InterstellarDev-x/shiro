@@ -47,47 +47,69 @@ impl SpeechEngine for DeepgramEngine {
                 .map_err(|_| "Deepgram API key contains an invalid character")?,
         );
 
-        let (mut socket, _) = connect_async(request)
-            .await
-            .map_err(|e| format!("Deepgram connection failed: {e}"))?;
+        // Both rustls crypto backends are enabled, so the connection panics
+        // unless one is chosen before the socket opens.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        eprintln!("[shiro] connecting {source:?} to Deepgram ({model})");
+        let (socket, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            connect_async(request),
+        )
+        .await
+        .map_err(|_| "Deepgram took too long to connect. Check the network and the API key.".to_string())?
+        .map_err(|e| format!("Deepgram connection failed: {e}"))?;
         eprintln!("[shiro] Deepgram stream open for {source:?} ({model})");
+        let (mut write, mut read) = socket.split();
 
         let mut committed = String::new();
+        let mut sent = 0u64;
+        let mut announced = false;
         loop {
             tokio::select! {
+                biased;
                 changed = stop.changed() => {
                     if changed.is_err() || *stop.borrow() {
                         break;
                     }
                 }
-                chunk = audio.recv() => {
-                    match chunk {
-                        Some(samples) => {
-                            let bytes = linear16(&samples);
-                            if socket.send(Message::Binary(bytes.into())).await.is_err() {
-                                return Err("Deepgram connection closed while sending audio".into());
-                            }
-                        }
-                        None => break,
-                    }
-                }
-                message = socket.next() => {
+                message = read.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
                             handle_message(&text, source, &mut committed, &events).await?;
+                        }
+                        Some(Ok(Message::Binary(bytes))) => {
+                            if let Ok(text) = std::str::from_utf8(&bytes) {
+                                handle_message(text, source, &mut committed, &events).await?;
+                            }
                         }
                         Some(Ok(Message::Close(_))) | None => break,
                         Some(Err(error)) => return Err(format!("Deepgram stream failed: {error}")),
                         Some(Ok(_)) => {}
                     }
                 }
+                chunk = audio.recv() => {
+                    match chunk {
+                        Some(samples) => {
+                            let bytes = linear16(&samples);
+                            sent += bytes.len() as u64;
+                            if !announced {
+                                announced = true;
+                                eprintln!("[shiro] sending microphone audio to Deepgram for {source:?}");
+                            }
+                            if write.send(Message::Binary(bytes.into())).await.is_err() {
+                                return Err("Deepgram connection closed while sending audio".into());
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
 
-        let _ = socket
+        eprintln!("[shiro] {source:?} sent {sent} bytes to Deepgram");
+        let _ = write
             .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
             .await;
-        let _ = socket.close(None).await;
         Ok(())
     }
 }

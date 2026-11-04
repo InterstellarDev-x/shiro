@@ -2,6 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleName</key>
+  <string>Shiro</string>
+  <key>CFBundleDisplayName</key>
+  <string>Shiro</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.adityaapkumar.shiro</string>
+  <key>CFBundleExecutable</key>
+  <string>shiro</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Shiro captures your screen to send to an AI assistant for analysis.</string>
   <key>NSScreenCaptureDescription</key>
   <string>Shiro captures your screen to send to an AI assistant for analysis.</string>
   <key>NSMicrophoneUsageDescription</key>

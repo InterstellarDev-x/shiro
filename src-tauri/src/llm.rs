@@ -20,6 +20,13 @@ pub trait VisionLlm: Send + Sync {
         prompt: &str,
         tx: mpsc::Sender<StreamChunk>,
     ) -> Result<(), String>;
+
+    /// Text-only answer. Call transcripts use this so a question does not take a screenshot.
+    async fn ask(
+        &self,
+        prompt: &str,
+        tx: mpsc::Sender<StreamChunk>,
+    ) -> Result<(), String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +181,68 @@ impl VisionLlm for AnthropicProvider {
         send_done(&tx).await;
         Ok(())
     }
+
+    async fn ask(
+        &self,
+        prompt: &str,
+        tx: mpsc::Sender<StreamChunk>,
+    ) -> Result<(), String> {
+        let body = json!({
+            "model": self.model,
+            "max_tokens": 400,
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        });
+
+        let response = self
+            .client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Claude API error {status}: {text}"));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+            let mut texts: Vec<String> = Vec::new();
+
+            split_lines_bytes(&mut buf, &bytes, |line| {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" { return; }
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(text) = val
+                            .get("delta")
+                            .and_then(|d| d.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
+                            texts.push(text.to_string());
+                        }
+                    }
+                }
+            });
+
+            for text in texts {
+                send_chunk(&tx, &text).await;
+            }
+        }
+
+        send_done(&tx).await;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +382,74 @@ impl VisionLlm for OpenAiProvider {
         eprintln!(
             "[shiro] OpenAI stream done. tokens={token_count} (data_lines={from_data_lines} fragments={from_fragments})"
         );
+        send_done(&tx).await;
+        Ok(())
+    }
+
+    async fn ask(
+        &self,
+        prompt: &str,
+        tx: mpsc::Sender<StreamChunk>,
+    ) -> Result<(), String> {
+        let body = json!({
+            "model": self.model,
+            "max_tokens": 400,
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        });
+
+        let endpoint = format!("{}/chat/completions", self.base_url);
+        let response = self
+            .client
+            .post(&endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("OpenAI API error {status}: {text}"));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+            let mut texts: Vec<String> = Vec::new();
+
+            split_lines_bytes(&mut buf, &bytes, |line| {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" { return; }
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(text) = val
+                            .get("choices")
+                            .and_then(|c| c.get(0))
+                            .and_then(|c| c.get("delta"))
+                            .and_then(|d| d.get("content"))
+                            .and_then(|t| t.as_str())
+                        {
+                            texts.push(text.to_string());
+                        }
+                    }
+                } else if !line.is_empty() && !line.starts_with(':') {
+                    if let Some(content) = extract_content_from_fragment(line) {
+                        texts.push(content);
+                    }
+                }
+            });
+
+            for text in texts {
+                send_chunk(&tx, &text).await;
+            }
+        }
+
         send_done(&tx).await;
         Ok(())
     }

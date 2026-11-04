@@ -84,11 +84,10 @@ fn capture_loop(
     }
 
     let setup = (|| {
-        let content = SCShareableContent::get().map_err(|e| {
-            format!(
-                "System audio needs Screen Recording permission. Grant it to Shiro in System Settings → Privacy & Security → Screen Recording, then restart Shiro. ({e})"
-            )
-        })?;
+        // Allowing the prompt often comes back as "not granted" for a moment.
+        // Try the capture anyway, and retry, before telling the user it failed.
+        request_screen_recording();
+        let content = shareable_content()?;
         let display = content
             .displays()
             .into_iter()
@@ -138,6 +137,62 @@ fn capture_loop(
         thread::sleep(Duration::from_millis(50));
     }
     let _ = stream.stop_capture();
+}
+
+#[cfg(target_os = "macos")]
+fn screen_recording_allowed() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> u8;
+    }
+    unsafe { CGPreflightScreenCaptureAccess() == 1 }
+}
+
+#[cfg(target_os = "macos")]
+fn request_screen_recording() {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGRequestScreenCaptureAccess() -> u8;
+    }
+
+    if screen_recording_allowed() {
+        eprintln!("[shiro] screen recording already allowed");
+        return;
+    }
+    eprintln!("[shiro] requesting screen recording permission");
+    let granted = unsafe { CGRequestScreenCaptureAccess() == 1 };
+    eprintln!("[shiro] screen recording request returned {granted}");
+    for _ in 0..20 {
+        if screen_recording_allowed() {
+            eprintln!("[shiro] screen recording allowed");
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shareable_content() -> Result<screencapturekit::shareable_content::SCShareableContent, String> {
+    use screencapturekit::prelude::SCShareableContent;
+
+    let mut last = String::new();
+    for attempt in 1..=8 {
+        match SCShareableContent::get() {
+            Ok(content) => return Ok(content),
+            Err(error) => {
+                last = error.to_string();
+                eprintln!("[shiro] screen content attempt {attempt}: {last}");
+                let denied = last.to_lowercase().contains("declined") || last.to_lowercase().contains("tcc");
+                if !denied {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+    Err(format!(
+        "The other person's audio needs Screen Recording. Turn on Shiro in System Settings → Privacy & Security → Screen Recording. Your microphone stays on. ({last})"
+    ))
 }
 
 #[cfg(target_os = "macos")]

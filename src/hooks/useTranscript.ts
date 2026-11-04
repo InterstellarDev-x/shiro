@@ -28,8 +28,11 @@ export function useTranscript() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const channelRef = useRef<Channel<TranscriptEvent> | null>(null);
+  const startingRef = useRef(false);
 
   const start = useCallback(async () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
     setError(null);
     setStatus("Starting…");
     const channel = new Channel<TranscriptEvent>();
@@ -72,6 +75,8 @@ export function useTranscript() {
       setStatus("");
       setError(String(e));
       setListening(false);
+    } finally {
+      startingRef.current = false;
     }
   }, []);
 

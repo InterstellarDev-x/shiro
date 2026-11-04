@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize, LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
@@ -22,6 +22,13 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 interface Message {
   role: "user" | "assistant";
   text: string;
+}
+
+function looksLikeQuestion(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 8) return false;
+  if (trimmed.includes("?")) return true;
+  return /\b(who|what|when|where|why|how|which|can you|could you|would you|should i|is there|are there|do you|does|did you|will you|tell me|explain)\b/i.test(trimmed);
 }
 
 function TranscriptRow({
@@ -64,6 +71,9 @@ export default function OverlayWindow() {
   const { addEntry } = useHistory();
   const { templates } = useTemplates();
   const transcript = useTranscript();
+  const answeredIds = useRef<Set<string>>(new Set());
+  const answering = useRef(false);
+  const [answerTick, setAnswerTick] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const appWindow = getCurrentWindow();
@@ -153,6 +163,46 @@ export default function OverlayWindow() {
       baseUrl: provider === "openai" ? baseUrl : null,
     }).catch(console.error);
   };
+
+  const linesRef = useRef(transcript.lines);
+  linesRef.current = transcript.lines;
+
+  const requestAnswer = useCallback(async (source: TranscriptSource, text: string) => {
+    const trimmed = text.trim();
+    const key = `${source}:${trimmed}`;
+    if (!looksLikeQuestion(trimmed) || answeredIds.current.has(key) || answering.current) return;
+    answeredIds.current.add(key);
+    answering.current = true;
+    const label = source === "me" ? "Me" : "Them";
+    const context = linesRef.current
+      .slice(-8)
+      .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
+      .join("\n");
+    const transcriptText = context.includes(trimmed) ? context : `${context}\n${label}: ${trimmed}`.trim();
+    setMessages((prev) => [...prev, { role: "user", text: `${label}: ${trimmed}` }]);
+    reset();
+    try {
+      const provider = localStorage.getItem("provider") ?? "openai";
+      const apiKey = localStorage.getItem(`api_key_${provider}`) ?? "";
+      // The chat box already uses the model loaded in the app. Only switch
+      // models when Settings has a key, so an empty value does not replace it.
+      if (apiKey.trim()) await applyModelTier(modelTier);
+      await query(transcriptText, { text: true });
+    } finally {
+      answering.current = false;
+      setAnswerTick((tick) => tick + 1);
+    }
+  }, [modelTier, query, reset]);
+
+  useEffect(() => {
+    if (!transcript.listening) return;
+    const line = [...transcript.lines].reverse().find((item) => {
+      const key = `${item.source}:${item.text.trim()}`;
+      return looksLikeQuestion(item.text) && !answeredIds.current.has(key);
+    });
+    if (line) void requestAnswer(line.source, line.text);
+  }, [transcript.lines, transcript.listening, answerTick, requestAnswer]);
+
 
   const handleTierChange = async (tier: ModelTier) => {
     setModelTier(tier);
@@ -381,7 +431,7 @@ export default function OverlayWindow() {
           <div className="flex flex-col gap-0.5 items-start">
             <span className="text-white/30 text-[10px] uppercase tracking-wide">Shiro</span>
             <div className="bg-white/10 rounded-lg px-3 py-2 text-sm text-white/50 animate-pulse">
-              Capturing & thinking…
+              Thinking…
             </div>
           </div>
         )}
