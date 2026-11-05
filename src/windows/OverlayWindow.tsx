@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
+import { memo, useState, useRef, useEffect, useCallback, KeyboardEvent, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize, LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,7 +34,7 @@ function looksLikeQuestion(text: string): boolean {
   return /\b(who|what|when|where|why|how|which|can you|could you|would you|should i|is there|are there|do you|does|did you|will you|tell me|explain)\b/i.test(trimmed);
 }
 
-function TranscriptRow({
+const TranscriptRow = memo(function TranscriptRow({
   source,
   text,
   live,
@@ -51,7 +51,50 @@ function TranscriptRow({
       {text}
     </div>
   );
-}
+});
+
+const markdownComponents = {
+  code({ className, children, ...props }: { className?: string; children?: ReactNode }) {
+    const match = /language-(\w+)/.exec(className ?? "");
+    const text = String(children).replace(/\n$/, "");
+    if (match?.[1] === "mermaid") return <MermaidChart chart={text} />;
+    return match ? (
+      <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div" className="rounded text-xs my-1">
+        {text}
+      </SyntaxHighlighter>
+    ) : (
+      <code className="bg-white/20 rounded px-1 text-xs font-mono" {...props}>{children}</code>
+    );
+  },
+  p({ children }: { children?: ReactNode }) {
+    return <p className="mb-1.5 last:mb-0 leading-relaxed">{children}</p>;
+  },
+  ul({ children }: { children?: ReactNode }) {
+    return <ul className="list-disc list-inside mb-1.5 space-y-0.5">{children}</ul>;
+  },
+  ol({ children }: { children?: ReactNode }) {
+    return <ol className="list-decimal list-inside mb-1.5 space-y-0.5">{children}</ol>;
+  },
+};
+
+const ChatMessage = memo(function ChatMessage({ role, text }: Message) {
+  return (
+    <div className={`flex flex-col gap-0.5 ${role === "user" ? "items-end" : "items-start"}`}>
+      <span className="text-white/30 text-[10px] uppercase tracking-wide">
+        {role === "user" ? "You" : "Shiro"}
+      </span>
+      {role === "user" ? (
+        <div className="bg-blue-600/80 rounded-lg px-3 py-2 text-sm text-white max-w-[90%]">
+          {text}
+        </div>
+      ) : (
+        <div className="bg-white/10 rounded-lg px-3 py-2 text-sm text-white/90 max-w-[90%]">
+          <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+});
 
 const SCREEN_KEY = "shiro_call_screen";
 const QUICK_KEY = "shiro_quick_context";
@@ -153,20 +196,17 @@ export default function OverlayWindow() {
     };
   }, []);
 
-  // Append streaming response as last assistant message
+  // Commit the reply once. Parsing markdown on every token re-rendered the whole chat.
   useEffect(() => {
-    if (!loading && !response) return;
+    if (loading || !response.trim()) return;
+    const text = response;
     setMessages((prev) => {
       const last = prev[prev.length - 1];
-      if (last?.role === "assistant") {
-        return [...prev.slice(0, -1), { role: "assistant", text: response }];
-      }
-      if (response) {
-        return [...prev, { role: "assistant", text: response }];
-      }
-      return prev;
+      if (last?.role === "assistant" && last.text === text) return prev;
+      if (last?.role !== "user") return prev;
+      return [...prev, { role: "assistant", text }];
     });
-  }, [response, loading]);
+  }, [loading, response]);
 
   const savePosition = async () => {
     const pos = await appWindow.outerPosition().catch(() => null);
@@ -368,13 +408,19 @@ export default function OverlayWindow() {
 
   useEffect(() => {
     if (!callId.current || transcript.lines.length === 0) return;
-    saveActiveCall();
+    const timer = window.setTimeout(saveActiveCall, 750);
+    return () => window.clearTimeout(timer);
   }, [transcript.lines, messages]);
+
+  useEffect(() => () => {
+    saveActiveCall();
+  }, []);
 
   useEffect(() => {
     if (transcript.listening) return;
     let cancelled = false;
     const look = async () => {
+      if (document.hidden) return;
       try {
         const name = await invoke<string | null>("detect_meeting_app");
         if (cancelled) return;
@@ -665,55 +711,15 @@ export default function OverlayWindow() {
           </div>
         )}
 
-        {messages.map((msg, i) => {
-          const streaming = loading && i === messages.length - 1;
-          return (
-          <div
-            key={i}
-            className={`flex flex-col gap-0.5 ${msg.role === "user" ? "items-end" : "items-start"}`}
-          >
-            <span className="text-white/30 text-[10px] uppercase tracking-wide">
-              {msg.role === "user" ? "You" : "Shiro"}
-            </span>
-            {msg.role === "user" ? (
-              <div className="bg-blue-600/80 rounded-lg px-3 py-2 text-sm text-white max-w-[90%]">
-                {msg.text}
-              </div>
-            ) : (
-              <div className="bg-white/10 rounded-lg px-3 py-2 text-sm text-white/90 max-w-[90%]">
-                <ReactMarkdown
-                  components={{
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className ?? "");
-                      if (match?.[1] === "mermaid") {
-                        return <MermaidChart chart={String(children).replace(/\n$/, "")} live={streaming} />;
-                      }
-                      return match ? (
-                        <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div" className="rounded text-xs my-1">
-                          {String(children).replace(/\n$/, "")}
-                        </SyntaxHighlighter>
-                      ) : (
-                        <code className="bg-white/20 rounded px-1 text-xs font-mono" {...props}>{children}</code>
-                      );
-                    },
-                    p({ children }) { return <p className="mb-1.5 last:mb-0 leading-relaxed">{children}</p>; },
-                    ul({ children }) { return <ul className="list-disc list-inside mb-1.5 space-y-0.5">{children}</ul>; },
-                    ol({ children }) { return <ol className="list-decimal list-inside mb-1.5 space-y-0.5">{children}</ol>; },
-                  }}
-                >
-                  {msg.text}
-                </ReactMarkdown>
-              </div>
-            )}
-          </div>
-          );
-        })}
+        {messages.map((msg, i) => (
+          <ChatMessage key={`${msg.role}-${i}`} role={msg.role} text={msg.text} />
+        ))}
 
         {loading && messages[messages.length - 1]?.role === "user" && (
           <div className="flex flex-col gap-0.5 items-start">
             <span className="text-white/30 text-[10px] uppercase tracking-wide">Shiro</span>
-            <div className="bg-white/10 rounded-lg px-3 py-2 text-sm text-white/50 animate-pulse">
-              Thinking…
+            <div className={`max-w-[90%] rounded-lg bg-white/10 px-3 py-2 text-sm whitespace-pre-wrap ${response ? "text-white/90" : "animate-pulse text-white/50"}`}>
+              {response || "Thinking…"}
             </div>
           </div>
         )}

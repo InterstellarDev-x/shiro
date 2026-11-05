@@ -1,6 +1,6 @@
-import { useEffect, useId, useState } from "react";
+import { memo, useEffect, useId, useState } from "react";
 
-export default function MermaidChart({ chart, live = false }: { chart: string; live?: boolean }) {
+const MermaidChart = memo(function MermaidChart({ chart, live = false }: { chart: string; live?: boolean }) {
   const reactId = useId().replace(/:/g, "");
   const [svg, setSvg] = useState("");
   const source = chart.trim();
@@ -34,4 +34,6 @@ export default function MermaidChart({ chart, live = false }: { chart: string; l
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
-}
+});
+
+export default MermaidChart;

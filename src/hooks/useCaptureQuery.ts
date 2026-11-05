@@ -20,15 +20,24 @@ export function useCaptureQuery() {
 
     let buffer = "";
     let rafId: number | null = null;
+    let lastPaint = 0;
+
+    const paint = () => {
+      if (!buffer) return;
+      const text = buffer;
+      buffer = "";
+      fullResponse.current += text;
+      setResponse((prev) => prev + text);
+      lastPaint = performance.now();
+    };
 
     const flush = () => {
-      if (buffer) {
-        const text = buffer;
-        buffer = "";
-        fullResponse.current += text;
-        setResponse((prev) => prev + text);
-      }
       rafId = null;
+      if (performance.now() - lastPaint < 80) {
+        rafId = requestAnimationFrame(flush);
+        return;
+      }
+      paint();
     };
 
     const channel = new Channel<StreamChunk>();
@@ -38,7 +47,7 @@ export function useCaptureQuery() {
         if (rafId === null) rafId = requestAnimationFrame(flush);
       } else {
         if (rafId !== null) cancelAnimationFrame(rafId);
-        flush();
+        paint();
         setLoading(false);
       }
     };

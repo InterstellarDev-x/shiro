@@ -1,4 +1,8 @@
-use image::{imageops::FilterType, ImageEncoder, codecs::png::PngEncoder, ColorType};
+use image::{
+    codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder},
+    imageops::FilterType,
+    ColorType, ImageEncoder,
+};
 use xcap::Monitor;
 
 /// Captures the primary monitor and returns a resized PNG.
@@ -46,7 +50,7 @@ pub fn capture_primary_screen() -> Result<Vec<u8>, String> {
     let (width, height) = (image.width(), image.height());
     let rgba_bytes = image.into_raw();
     let mut png_bytes: Vec<u8> = Vec::new();
-    PngEncoder::new(&mut png_bytes)
+    PngEncoder::new_with_quality(&mut png_bytes, CompressionType::Fast, PngFilter::Sub)
         .write_image(&rgba_bytes, width, height, ColorType::Rgba8.into())
         .map_err(|e| format!("PNG encoding failed: {e}"))?;
     eprintln!("[shiro] screen capture {width}x{height}, {} bytes", png_bytes.len());

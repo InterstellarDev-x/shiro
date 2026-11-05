@@ -554,6 +554,8 @@ export default function MainWindow() {
               <div className="flex-1 overflow-y-auto rounded-lg bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 p-4 text-sm text-zinc-800 dark:text-zinc-200">
                 {error ? (
                   <span className="text-red-500">{error}</span>
+                ) : loading ? (
+                  <pre className="whitespace-pre-wrap font-sans leading-relaxed">{response}</pre>
                 ) : (
                   <ReactMarkdown
                     components={{
