@@ -12,6 +12,7 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const DEFAULT_HOTKEY = "Ctrl+Shift+0";
 const HOTKEY_KEY = "shiro_hotkey";
+const TRAY_KEY = "shiro_tray_visible";
 
 type Provider = "anthropic" | "openai";
 
@@ -40,10 +41,22 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
   const [hotkey, setHotkey] = useState(() => localStorage.getItem(HOTKEY_KEY) ?? DEFAULT_HOTKEY);
   const [hotkeyError, setHotkeyError] = useState("");
   const [autostart, setAutostart] = useState(false);
+  const [trayVisible, setTrayVisible] = useState(() => localStorage.getItem(TRAY_KEY) === "1");
 
   useEffect(() => {
     invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
   }, []);
+
+  const toggleTray = async () => {
+    const next = !trayVisible;
+    try {
+      await invoke("set_tray_visible", { visible: next });
+      localStorage.setItem(TRAY_KEY, next ? "1" : "0");
+      setTrayVisible(next);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const toggleAutostart = async () => {
     try {
@@ -60,6 +73,7 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
       await invoke("set_hotkey", { shortcutStr: hotkey });
       localStorage.setItem(HOTKEY_KEY, hotkey);
       onHotkeyChange(hotkey);
+      await invoke("show_overlay");
     } catch (e) {
       setHotkeyError(String(e));
     }
@@ -286,6 +300,23 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
           </button>
         </div>
 
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Menu bar icon</p>
+            <p className="text-xs text-zinc-400">Off keeps Shiro out of sight. Open Shiro again from Spotlight or Applications to see this window.</p>
+          </div>
+          <button
+            onClick={toggleTray}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+              trayVisible ? "bg-blue-600" : "bg-zinc-300 dark:bg-zinc-600"
+            }`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              trayVisible ? "translate-x-6" : "translate-x-1"
+            }`} />
+          </button>
+        </div>
+
         <button
           onClick={saveProvider}
           className="rounded-lg bg-zinc-800 dark:bg-zinc-200 text-white dark:text-zinc-900 text-sm font-medium py-2 hover:opacity-80 transition-opacity"
@@ -363,6 +394,18 @@ export default function MainWindow() {
   const [prompt, setPrompt] = useState("");
   const [calls, setCalls] = useState<SavedCall[]>(() => listSavedCalls());
   const [selectedCall, setSelectedCall] = useState<SavedCall | null>(null);
+
+  // This window loads hidden at login, so it restores the saved shortcut and the
+  // menu bar icon choice; the Rust side only knows the default shortcut.
+  useEffect(() => {
+    const saved = localStorage.getItem(HOTKEY_KEY);
+    if (saved && saved !== DEFAULT_HOTKEY) {
+      invoke("set_hotkey", { shortcutStr: saved }).catch(console.error);
+    }
+    if (localStorage.getItem(TRAY_KEY) === "1") {
+      invoke("set_tray_visible", { visible: true }).catch(console.error);
+    }
+  }, []);
 
   useEffect(() => {
     const sync = () => setCalls(listSavedCalls());
@@ -467,11 +510,14 @@ export default function MainWindow() {
         </div>
 
         <p className="text-sm text-zinc-500 dark:text-zinc-400 shrink-0">
-          Press{" "}
-          <kbd className="rounded bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 text-xs font-mono border border-zinc-300 dark:border-zinc-600">
+          <button
+            type="button"
+            onClick={() => invoke("show_overlay").catch(console.error)}
+            className="mr-1 rounded bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 text-xs font-mono border border-zinc-300 dark:border-zinc-600 text-zinc-800 dark:text-zinc-100 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+          >
             {hotkey}
-          </kbd>{" "}
-          anywhere to open the overlay and ask about your screen.
+          </button>
+          opens the overlay. Press that shortcut anywhere to show it again.
         </p>
 
         <hr className="border-zinc-200 dark:border-zinc-700 shrink-0" />

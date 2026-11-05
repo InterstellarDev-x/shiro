@@ -69,9 +69,9 @@ export function sessionBrief(session: CallSession = loadCallSession()): string {
   const parts = [`Session: ${kind}${title ? ` — ${title}` : ""}`];
   parts.push(
     session.style === "coding"
-      ? "Answer style: Give the approach, the time and space complexity, and the edge cases, in words the user can say. Add a short code sketch only when it helps."
+      ? "Answer style: Coding. Give the approach in one or two sentences, then a fenced code block that solves it, in the language being discussed (Python if none is named). Then state the time and space complexity and the main edge cases. Skip the code block only for a purely conceptual question."
       : session.style === "script"
-        ? "Answer style: Give a short script the user can say. If the question is a system design, end with a flowchart inside a mermaid code fence. If code is on screen, walk through the approach and its complexity."
+        ? "Answer style: Give a short script the user can say. If code is on screen, walk through the approach and its complexity."
         : "Answer style: One or two short sentences the user can say out loud.",
   );
   const instructions = clip(session.instructions, 8000);

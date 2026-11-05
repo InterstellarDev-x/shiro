@@ -34,6 +34,11 @@ function looksLikeQuestion(text: string): boolean {
   return /\b(who|what|when|where|why|how|which|can you|could you|would you|should i|is there|are there|do you|does|did you|will you|tell me|explain)\b/i.test(trimmed);
 }
 
+/** Only an explicit request gets a chart. "Architecture" alone is a normal question. */
+function wantsDiagram(text: string): boolean {
+  return /\b(diagrams?|mermaid|flow ?charts?|draw|sketch)\b/i.test(text);
+}
+
 const TranscriptRow = memo(function TranscriptRow({
   source,
   text,
@@ -128,6 +133,9 @@ export default function OverlayWindow() {
   const [answerTick, setAnswerTick] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const ignoreScrollUntil = useRef(0);
+  const wasLoading = useRef(false);
   const appWindow = getCurrentWindow();
 
   // Transparent background
@@ -168,33 +176,57 @@ export default function OverlayWindow() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Keep the latest line in view. Ignore the scroll events caused by our own pin,
-  // or a diagram resize looks like the user scrolled and the view jumps.
+  // Follow the newest line, including Shiro's reply as it grows. A pin sets
+  // scrollTop, and WebKit reports that scroll later — after the reply has
+  // already gotten taller — so those events must not count as the user leaving.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const stick = { current: true };
-    let pinning = false;
-    const onScroll = () => {
-      if (pinning) return;
-      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-    };
+    const distanceFromBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight;
     const pin = () => {
-      if (!stick.current) return;
-      pinning = true;
+      if (!stickRef.current) return;
+      ignoreScrollUntil.current = performance.now() + 180;
       el.scrollTop = el.scrollHeight;
-      pinning = false;
+    };
+    const onScroll = () => {
+      if (performance.now() < ignoreScrollUntil.current) return;
+      stickRef.current = distanceFromBottom() < 64;
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) stickRef.current = false;
+      else if (distanceFromBottom() < 64) stickRef.current = true;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
     const observer = new ResizeObserver(pin);
     const content = el.firstElementChild;
     if (content) observer.observe(content);
     pin();
     return () => {
       el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
       observer.disconnect();
     };
   }, []);
+
+  useEffect(() => {
+    if (loading && !wasLoading.current) stickRef.current = true;
+    wasLoading.current = loading;
+    if (!stickRef.current) return;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        const node = scrollRef.current;
+        if (!node || !stickRef.current) return;
+        ignoreScrollUntil.current = performance.now() + 180;
+        node.scrollTop = node.scrollHeight;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [response, messages, loading]);
 
   // Commit the reply once. Parsing markdown on every token re-rendered the whole chat.
   useEffect(() => {
@@ -261,10 +293,12 @@ export default function OverlayWindow() {
             .slice(-8)
             .map((item) => `${item.source === "me" ? "Me" : "Them"}: ${item.text}`)
             .join("\n");
-          return context.includes(trimmed) ? context : `${context}\n${label}: ${trimmed}`.trim();
+          return `${context}\n\nLatest question: ${label}: ${trimmed}`.trim();
         })();
     const payload = fast
-      ? `Answer in one short sentence the user can say out loud.${includeScreenRef.current ? " A screenshot of the user's screen is attached. Use what is visible in it." : ""}\n\n${transcriptText}`
+      ? `${wantsDiagram(trimmed)
+          ? "Draw this as one fenced mermaid flowchart. Do not describe the boxes in prose."
+          : "Answer in one short sentence the user can say out loud."}${includeScreenRef.current ? " A screenshot of the user's screen is attached. Use what is visible in it." : ""}\n\n${transcriptText}`
       : withSession(transcriptText);
     setMessages((prev) => [...prev, { role: "user", text: `${label}: ${trimmed}` }]);
     reset();
@@ -363,7 +397,7 @@ export default function OverlayWindow() {
     try {
       const payload = fast
         ? `Answer in one short sentence the user can say out loud.\n\nQuestion: ${question}`
-        : withSession(`${body}\nQuestion: ${question}`.trim());
+        : withSession(`${body}\n\nLatest question: ${question}`.trim());
       await query(payload, { text: true, screen: false, task: "answer" });
     } finally {
       answering.current = false;
@@ -582,6 +616,16 @@ export default function OverlayWindow() {
           className="text-white/40 hover:text-white/80 text-xs px-1 cursor-pointer"
         >
           ◑
+        </button>
+
+        {/* Main window: sessions, saved calls, settings */}
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => invoke("show_main").catch(console.error)}
+          title="Open Shiro: session, saved calls, settings"
+          className="text-white/40 hover:text-white/80 text-xs px-1 cursor-pointer"
+        >
+          ⚙
         </button>
 
         {/* New chat */}

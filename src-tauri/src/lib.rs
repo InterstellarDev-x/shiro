@@ -46,10 +46,52 @@ fn prepare_overlay_window(overlay: &tauri::WebviewWindow) {
     configure_overlay_for_macos_fullscreen(overlay);
 }
 
+fn overlay_is_on_screen(overlay: &tauri::WebviewWindow) -> bool {
+    let Ok(monitors) = overlay.available_monitors() else {
+        return true;
+    };
+    let (Ok(pos), Ok(size)) = (overlay.outer_position(), overlay.outer_size()) else {
+        return true;
+    };
+    if size.width < 200 || size.height < 200 {
+        return false;
+    }
+    monitors.iter().any(|monitor| {
+        let origin = monitor.position();
+        let area = monitor.size();
+        let right = origin.x + area.width as i32;
+        let bottom = origin.y + area.height as i32;
+        let center_x = pos.x + size.width as i32 / 2;
+        let top = pos.y + 24;
+        center_x >= origin.x && center_x < right && top >= origin.y && top < bottom
+    })
+}
+
 fn show_overlay_window(overlay: &tauri::WebviewWindow) {
     prepare_overlay_window(overlay);
+    let _ = overlay.unminimize();
+    if !overlay_is_on_screen(overlay) {
+        if let Ok(Some(monitor)) = overlay.primary_monitor() {
+            let origin = monitor.position();
+            let _ = overlay.set_position(tauri::PhysicalPosition::new(origin.x + 48, origin.y + 48));
+            let _ = overlay.set_size(tauri::PhysicalSize::new(340u32, 480u32));
+        }
+    }
     let _ = overlay.show();
     let _ = overlay.set_focus();
+    let _ = overlay.set_always_on_top(true);
+}
+
+/// Hide only when the overlay is the window the user is already looking at.
+/// A hidden, off-screen, or unfocused window must open instead of toggling shut.
+fn toggle_overlay_window(overlay: &tauri::WebviewWindow) {
+    let visible = overlay.is_visible().unwrap_or(false);
+    let focused = overlay.is_focused().unwrap_or(false);
+    if visible && focused && overlay_is_on_screen(overlay) {
+        let _ = overlay.hide();
+    } else {
+        show_overlay_window(overlay);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -113,6 +155,20 @@ async fn capture_and_query(
     run_query(png_bytes, prompt, channel, llm).await
 }
 
+/// True only when the question being answered explicitly asks for a chart.
+/// Earlier transcript lines and words like "architecture" do not count.
+fn wants_diagram(transcript: &str) -> bool {
+    let lower = transcript.to_lowercase();
+    let question = lower
+        .rsplit_once("latest question:")
+        .map(|(_, rest)| rest)
+        .or_else(|| lower.rsplit('\n').find(|line| !line.trim().is_empty()))
+        .unwrap_or(lower.as_str());
+    ["diagram", "mermaid", "flowchart", "flow chart", "draw", "sketch"]
+        .iter()
+        .any(|word| question.contains(word))
+}
+
 /// Answer a live-call question, or write notes when `task` is "notes".
 /// The transcript may start with a session block (instructions, resume, reference).
 /// When `include_screen` is set, the current screen is sent with the question.
@@ -144,9 +200,23 @@ async fn answer_call(
         return Ok(None);
     }
 
-    let guidance = "A session block may include instructions, a resume, and reference notes. Follow that block. \
-         Answer only the latest question, using the answer style in the session. \
-         If no style is given, answer in one or two short sentences the user can say out loud.";
+    let mut guidance = "A session block may include instructions, a resume, and reference notes. Follow that block. \
+         Answer only the line marked Latest question (or the last line if none is marked). Earlier lines are context only; \
+         do not answer them again. Do not write a new Me or Them dialogue. \
+         Follow the answer style in the session. If no style is given, answer in one or two short sentences the user can say out loud."
+        .to_string();
+    if wants_diagram(&transcript) {
+        guidance.push_str(
+            " The latest question asks for a diagram. Ignore the short-sentence limit. \
+             After one sentence, output exactly one fenced mermaid flowchart that shows the named components and how they connect. \
+             Do not describe the boxes in prose instead of the chart.",
+        );
+    } else {
+        guidance.push_str(
+            " Do not output a mermaid block or any diagram, even if earlier lines asked for one. \
+             When code helps, use a normal fenced code block in the language being discussed.",
+        );
+    }
 
     if include_screen.unwrap_or(false) {
         match do_capture().await {
@@ -398,12 +468,60 @@ async fn set_hotkey(
     gs.on_shortcut(new_shortcut, move |_app, _shortcut, event| {
         if event.state() != ShortcutState::Pressed { return; }
         if let Some(overlay) = handle.get_webview_window("overlay") {
-            let visible = overlay.is_visible().unwrap_or(false);
-            if visible { let _ = overlay.hide(); }
-            else { show_overlay_window(&overlay); }
+            toggle_overlay_window(&overlay);
         }
     }).map_err(|e| format!("Register failed: {e}"))?;
 
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+#[tauri::command]
+fn show_main(app: tauri::AppHandle) {
+    show_main_window(&app);
+}
+
+/// The menu bar icon is off by default so Shiro has no visible trace until it is opened.
+#[tauri::command]
+fn set_tray_visible(visible: bool, app: tauri::AppHandle) -> Result<(), String> {
+    let tray = app.tray_by_id(TRAY_ID).ok_or("Menu bar icon is missing")?;
+    tray.set_visible(visible).map_err(|e| e.to_string())
+}
+
+const TRAY_ID: &str = "shiro";
+
+/// Launch at login once, on the first run of a release build. The Settings toggle
+/// still turns it off, and the marker file keeps a later launch from turning it back on.
+/// Dev builds are skipped so the login item never points at target/debug.
+fn enable_autostart_on_first_run(app: &tauri::App) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&marker, "1");
+    }
+}
+
+#[tauri::command]
+fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or("Overlay window is missing")?;
+    show_overlay_window(&overlay);
     Ok(())
 }
 
@@ -502,6 +620,9 @@ pub fn run() {
             debug_capture,
             set_provider,
             set_hotkey,
+            show_overlay,
+            show_main,
+            set_tray_visible,
             set_autostart,
             get_autostart,
             start_listening,
@@ -510,14 +631,18 @@ pub fn run() {
             detect_meeting_app,
         ])
         .setup(move |app| {
+            // No Dock icon and no Cmd+Tab entry. Windows open only from the hotkey,
+            // the menu bar icon (if enabled), or opening Shiro again.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            enable_autostart_on_first_run(app);
+
             // Register hotkey
             let handle = app.handle().clone();
             app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
             if event.state() != ShortcutState::Pressed { return; }
             if let Some(overlay) = handle.get_webview_window("overlay") {
-                let visible = overlay.is_visible().unwrap_or(false);
-                if visible { let _ = overlay.hide(); }
-                else { show_overlay_window(&overlay); }
+                toggle_overlay_window(&overlay);
             }
         })?;
 
@@ -531,18 +656,13 @@ pub fn run() {
                 .expect("embedded tray icon must be a valid PNG");
 
             let tray_handle = app.handle().clone();
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(icon)
-                .tooltip("Shiro — Ctrl+Shift+0 to capture")
+                .tooltip("Shiro")
                 .menu(&menu)
                 .on_menu_event(move |_tray, event| {
                     match event.id().as_ref() {
-                        "show_main" => {
-                            if let Some(w) = tray_handle.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
+                        "show_main" => show_main_window(&tray_handle),
                         "show_overlay" => {
                             if let Some(w) = tray_handle.get_webview_window("overlay") {
                                 show_overlay_window(&w);
@@ -559,11 +679,12 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("main") {
                             let visible = w.is_visible().unwrap_or(false);
                             if visible { let _ = w.hide(); }
-                            else { let _ = w.show(); let _ = w.set_focus(); }
+                            else { show_main_window(app); }
                         }
                     }
                 })
                 .build(app)?;
+            let _ = tray.set_visible(false);
 
             if let Some(overlay) = app.get_webview_window("overlay") {
                 prepare_overlay_window(&overlay);
@@ -581,6 +702,13 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // Opening Shiro again from Finder, Spotlight, or Launchpad shows the main window.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+        });
 }

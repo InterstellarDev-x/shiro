@@ -21,6 +21,7 @@ fn relaunch_in_app_bundle() {
         if let Some(debug_dir) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
             let _ = std::fs::write(debug_dir.join("shiro.pid"), std::process::id().to_string());
         }
+        exit_with_dev_parent();
         eprintln!(
             "[shiro] running as Shiro.app (pid {}) so macOS can ask Shiro for the microphone",
             std::process::id()
@@ -114,6 +115,7 @@ fn relaunch_in_app_bundle() {
         command.arg("--env").arg(format!("{key}={value}"));
     }
     command.arg("--env").arg("SHIRO_RESPONSIBLE=1");
+    command.arg("--env").arg(format!("SHIRO_DEV_PARENT={}", std::process::id()));
     command.arg(&app);
     command.arg("--args");
     for arg in std::env::args_os().skip(1) {
@@ -158,6 +160,29 @@ fn relaunch_in_app_bundle() {
     let status = child.wait();
     let code = status.ok().and_then(|status| status.code()).unwrap_or(1);
     std::process::exit(code);
+}
+
+/// `tauri dev` kills the launcher with SIGKILL when it rebuilds, so the signal
+/// forwarding below never runs. Without this check the old Shiro.app kept running
+/// with no Dock icon, and its windows sat on screen catching clicks.
+#[cfg(target_os = "macos")]
+fn exit_with_dev_parent() {
+    let Some(parent) = std::env::var("SHIRO_DEV_PARENT")
+        .ok()
+        .and_then(|pid| pid.parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    else {
+        return;
+    };
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let alive = unsafe { libc::kill(parent, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !alive {
+            eprintln!("[shiro] the dev launcher exited, so this copy is quitting too");
+            std::process::exit(0);
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]

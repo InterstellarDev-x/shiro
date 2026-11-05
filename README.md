@@ -13,9 +13,18 @@ On macOS the dev app relaunches as `Shiro.app` so microphone and screen recordin
 
 A release build is at `src-tauri/target/release/bundle/macos/shiro.app` after `npm run tauri build`.
 
+## Staying out of sight
+
+Shiro starts hidden. It has no Dock icon, no Cmd+Tab entry, and no menu bar icon unless you turn one on. Both windows are kept out of screen capture.
+
+- `Ctrl+Shift+0` (or your own shortcut) opens and closes the overlay.
+- **⚙** in the overlay, or opening Shiro again from Spotlight or Applications, shows the main window.
+- **Settings → Menu bar icon** adds a menu bar icon if you want one.
+- A release build turns on **Launch at startup** the first time it runs. Turn it off in Settings and it stays off. Dev builds never add a login item.
+
 ## First-time setup
 
-1. Open the main Shiro window and choose **Settings**.
+1. Press `Ctrl+Shift+0`, press **⚙**, and choose **Settings**.
 2. Pick Anthropic or OpenAI, paste the API key, and press **Save**.
 3. Paste a Deepgram API key under **Call transcription**.
 4. Press **Listen** in the overlay. Allow the microphone prompt.
@@ -42,7 +51,7 @@ The call is saved on the main window under **Calls**. Open it to read the transc
 
 **🖥 On** and **📷 Ask** both send a screenshot of the primary display, scaled so the longest edge is 1280 pixels. Shiro's own overlay is excluded from that capture. Quick mode still attaches the screenshot when **🖥 On** is selected. If the reply says no image arrived, confirm Screen Recording is enabled for this copy of Shiro and look for a warning under the answer. A new build is a new app identity, so macOS asks again.
 
-**Script** mode can end a system-design answer with a flowchart. The chart is drawn after the answer finishes, so the transcript stays put. A chart that is not valid stays as text.
+A chart is drawn only when the question asks for one with words like "draw", "diagram", "flowchart", or "mermaid". Other answers, including system design and coding, have no chart. **Coding** style answers with a code block, plus the complexity and the edge cases. The chart is drawn after the answer finishes, so the transcript stays put. A chart that is not valid stays as text.
 
 ## If something fails
 

@@ -19,7 +19,8 @@
         "width": 720,
         "height": 560,
         "resizable": true,
-        "visible": true
+        "visible": false,
+        "contentProtected": true
       },
       {
         "label": "overlay",
