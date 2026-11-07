@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCaptureQuery } from "../hooks/useCaptureQuery";
-import { DEFAULT_DEEPGRAM_MODEL, DEFAULT_PHONON_MODEL, SPEECH_PROVIDER } from "../speech/provider";
+import { DEFAULT_DEEPGRAM_MODEL, SPEECH_PROVIDER } from "../speech/provider";
 import { useHistory, HistoryEntry } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
 import CallSessionForm from "../components/CallSessionForm";
@@ -42,9 +42,23 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
   const [hotkeyError, setHotkeyError] = useState("");
   const [autostart, setAutostart] = useState(false);
   const [trayVisible, setTrayVisible] = useState(() => localStorage.getItem(TRAY_KEY) === "1");
+  const [undetectable, setUndetectable] = useState(true);
+  const [disguise, setDisguise] = useState("none");
+  const [presenceLabel, setPresenceLabel] = useState("Voice Input");
+
+  const publishPresence = (view: { undetectable: boolean; disguise: string; label: string }) => {
+    setUndetectable(view.undetectable);
+    setDisguise(view.disguise);
+    setPresenceLabel(view.label);
+    document.title = view.label;
+    localStorage.setItem("shiro_presence_ping", view.label);
+  };
 
   useEffect(() => {
     invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+    invoke<{ undetectable: boolean; disguise: string; label: string }>("presence_state")
+      .then(publishPresence)
+      .catch(() => {});
   }, []);
 
   const toggleTray = async () => {
@@ -262,15 +276,6 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
               className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           )}
-          {SPEECH_PROVIDER === "phonon" && (
-            <input
-              type="text"
-              defaultValue={localStorage.getItem("phonon_model") ?? DEFAULT_PHONON_MODEL}
-              onChange={(e) => localStorage.setItem("phonon_model", e.target.value)}
-              placeholder={DEFAULT_PHONON_MODEL}
-              className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          )}
           {SPEECH_PROVIDER === "deepgram" && (
             <input
               type="text"
@@ -315,6 +320,54 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
               trayVisible ? "translate-x-6" : "translate-x-1"
             }`} />
           </button>
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Undetectable</p>
+            <p className="text-xs text-zinc-400">
+              Marks this app's windows private, including tooltips, menus, file dialogs, and its own notification windows, so a normal screen share leaves them out. A camera pointed at the screen still sees them.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              invoke<{ undetectable: boolean; disguise: string; label: string }>("set_undetectable", {
+                enabled: !undetectable,
+              })
+                .then(publishPresence)
+                .catch(console.error);
+            }}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+              undetectable ? "bg-blue-600" : "bg-zinc-300 dark:bg-zinc-600"
+            }`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              undetectable ? "translate-x-6" : "translate-x-1"
+            }`} />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Shown as</label>
+          <select
+            value={disguise}
+            onChange={(e) => {
+              invoke<{ undetectable: boolean; disguise: string; label: string }>("set_disguise", {
+                mode: e.target.value,
+              })
+                .then(publishPresence)
+                .catch(console.error);
+            }}
+            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="none">Voice Input</option>
+            <option value="terminal">Terminal</option>
+            <option value="settings">System Settings</option>
+            <option value="activity">Activity Monitor</option>
+          </select>
+          <p className="text-xs text-zinc-400">
+            The process list shows {presenceLabel}. Terminal, System Settings, or Activity Monitor also puts that name and icon on the Dock and taskbar. On Windows those labels are Command Prompt, Settings, and Task Manager. Voice Input is still the program that is running. The file path, code signature, and binary do not change.
+          </p>
         </div>
 
         <button

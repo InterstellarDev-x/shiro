@@ -54,7 +54,8 @@ opt-level = "s"   # optimize for binary size
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSWindow"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSWindow", "NSApplication", "NSResponder", "NSImage", "NSWorkspace", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 block2 = "0.6.2"
 coreaudio-rs = "0.11.3"

@@ -2,6 +2,7 @@ mod audio;
 mod capture;
 mod listen;
 mod llm;
+mod presence;
 mod stt;
 
 use base64::Engine as _;
@@ -620,6 +621,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(state)
+        .manage(presence::Presence::new())
         .invoke_handler(tauri::generate_handler![
             capture_and_query,
             answer_call,
@@ -636,6 +638,9 @@ pub fn run() {
             stop_listening,
             speech_engine_id,
             detect_meeting_app,
+            presence::presence_state,
+            presence::set_undetectable,
+            presence::set_disguise,
         ])
         .setup(move |app| {
             // No Dock icon and no Cmd+Tab entry. Windows open only from the hotkey,
@@ -654,7 +659,7 @@ pub fn run() {
         })?;
 
             // System tray
-            let show_main = MenuItem::with_id(app, "show_main", "Open Voice Input", true, None::<&str>)?;
+            let show_main = MenuItem::with_id(app, "show_main", "Show window", true, None::<&str>)?;
             let show_overlay = MenuItem::with_id(app, "show_overlay", "Open overlay", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_main, &show_overlay, &quit])?;
@@ -697,6 +702,9 @@ pub fn run() {
                 prepare_overlay_window(&overlay);
             }
 
+            presence::restore(app.handle());
+            presence::start_sweep(app.handle().clone());
+
             // Hide main window on close instead of quitting
             let main_win = app.get_webview_window("main").unwrap();
             let main_win_clone = main_win.clone();
@@ -712,6 +720,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
+            if let tauri::RunEvent::Exit = _event {
+                presence::stop_sweep();
+            }
             // Opening Voice Input again from Finder, Spotlight, or Launchpad shows the main window.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {

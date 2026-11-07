@@ -5,9 +5,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCaptureQuery } from "../hooks/useCaptureQuery";
 import { useHistory } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
-import { useTranscript, TranscriptSource, AudioInput } from "../hooks/useTranscript";
+import { useTranscript, TranscriptSource, AudioInput, type TranscriptLine } from "../hooks/useTranscript";
 import { loadCallSession, withSession } from "../callSession";
 import { upsertSavedCall } from "../savedCalls";
+import {
+  SPECULATIVE_DEBOUNCE_MS,
+  canAdoptSpeculation,
+  groundedAsk,
+  speculativeAsk,
+} from "../ask";
 import MermaidChart from "../components/MermaidChart";
 
 const MODEL_KEY = "shiro_overlay_model";
@@ -25,39 +31,6 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 interface Message {
   role: "user" | "assistant";
   text: string;
-}
-
-const QUESTION_WORDS = [
-  "who", "whom", "whose", "what", "whats", "what's", "when", "where", "why", "how", "which", "whether",
-  "is it", "is that", "is this", "is there", "are there", "are you", "are we", "was it", "were you",
-  "do you", "do we", "does", "did you", "did it", "can you", "can we", "can i", "could you", "could we",
-  "would you", "would it", "will you", "will it", "should i", "should we", "shall we", "may i", "might",
-  "have you", "has it", "had you", "any idea", "any thoughts", "any questions", "anything else",
-  "tell", "explain", "describe", "elaborate", "walk me", "walk us", "walk through", "talk about", "talk me",
-  "share", "discuss", "define", "compare", "contrast", "differentiate", "difference between", "list",
-  "name", "summarize", "summarise", "outline", "give me", "give us", "give an", "give a", "show me",
-  "write", "code", "implement", "design", "build", "solve", "calculate", "find", "count", "estimate",
-  "draw", "sketch", "diagram", "suggest", "recommend", "advise", "help me", "help us", "let's", "lets",
-  "imagine", "suppose", "assume", "consider", "think about", "go over", "go through", "brief",
-  "introduce", "introduction", "yourself", "your thoughts", "your opinion", "your view", "your take",
-  "your experience", "your background", "your role", "your strengths", "your weakness",
-  "i want to know", "i'd like to know", "i would like to know", "i'd like to hear", "i would like to hear",
-  "i'm curious", "i am curious", "i wonder", "wondering", "curious", "what about", "how about",
-  "kya", "kaise", "kyun", "kyon", "kab", "kahan", "kaun", "kitna", "kitne", "batao", "bataiye",
-  "bataye", "samjhao", "samjhaiye",
-];
-const QUESTION_PATTERN = new RegExp(
-  `\\b(${QUESTION_WORDS.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-  "i",
-);
-const DEVANAGARI_QUESTION_WORDS = ["क्या", "कैसे", "क्यों", "कब", "कहाँ", "कहां", "कौन", "कितना", "बताइए", "बताओ", "बताइये", "समझाइए", "समझाओ"];
-
-function looksLikeQuestion(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length < 3) return false;
-  if (/[?？]/.test(trimmed)) return true;
-  if (QUESTION_PATTERN.test(trimmed)) return true;
-  return DEVANAGARI_QUESTION_WORDS.some((word) => trimmed.includes(word));
 }
 
 /** Only an explicit request gets a chart. "Architecture" alone is a normal question. */
@@ -133,15 +106,6 @@ const POS_KEY = "shiro_overlay_pos";
 const SIZE_KEY = "shiro_overlay_size";
 const OPACITY_KEY = "shiro_overlay_opacity";
 const AUDIO_INPUT_KEY = "shiro_audio_input";
-const AUTO_SEND_PAUSE_KEY = "shiro_auto_send_pause_ms";
-/** Silence after the interviewer's last finished line before it is sent without looking like a question. */
-const AUTO_SEND_PAUSES_MS = [500, 1000, 1500, 2000, 3000, 5000];
-const DEFAULT_AUTO_SEND_PAUSE_MS = 1500;
-
-function loadAutoSendPause(): number {
-  const saved = Number(localStorage.getItem(AUTO_SEND_PAUSE_KEY));
-  return AUTO_SEND_PAUSES_MS.includes(saved) ? saved : DEFAULT_AUTO_SEND_PAUSE_MS;
-}
 
 const AUDIO_INPUTS: { value: AudioInput; label: string; title: string }[] = [
   { value: "both", label: "🎙+🔊 Both", title: "Listen to your microphone and system audio" },
@@ -152,6 +116,19 @@ const AUDIO_INPUTS: { value: AudioInput; label: string; title: string }[] = [
 function loadAudioInput(): AudioInput {
   const saved = localStorage.getItem(AUDIO_INPUT_KEY);
   return AUDIO_INPUTS.some((input) => input.value === saved) ? (saved as AudioInput) : "both";
+}
+
+/** System listens to the other person. Mic listens to you. Both listens to whoever is speaking. */
+function livePartial(
+  input: AudioInput,
+  lines: TranscriptLine[],
+  me: string,
+  them: string,
+): { source: TranscriptSource; text: string } | null {
+  const candidates: { source: TranscriptSource; text: string }[] = [];
+  if (input !== "mic" && them.trim()) candidates.push({ source: "them", text: them });
+  if (input !== "system" && me.trim()) candidates.push({ source: "me", text: me });
+  return candidates.find((item) => speculativeAsk(lines, item.text, item.source, input)) ?? null;
 }
 
 export default function OverlayWindow() {
@@ -171,8 +148,6 @@ export default function OverlayWindow() {
   );
   const [quick, setQuick] = useState(() => localStorage.getItem(QUICK_KEY) === "1");
   const [audioInput, setAudioInput] = useState<AudioInput>(loadAudioInput);
-  const activeInputRef = useRef<AudioInput>(audioInput);
-  const [autoSendPause, setAutoSendPause] = useState(loadAutoSendPause);
 
   const { response, loading, error, query, reset } = useCaptureQuery();
   const { addEntry } = useHistory();
@@ -356,12 +331,17 @@ export default function OverlayWindow() {
   const [meetingApp, setMeetingApp] = useState<string | null>(null);
   const dismissedMeeting = useRef<string | null>(null);
 
-  const requestAnswer = useCallback(async (source: TranscriptSource, text: string, force = false) => {
+  const requestAnswer = useCallback(async (
+    source: TranscriptSource,
+    text: string,
+    force = false,
+    keys?: string[],
+  ) => {
     const trimmed = text.trim();
-    const key = `${source}:${trimmed}`;
+    const dedupe = keys?.length ? keys : [`${source}:${trimmed}`];
     if (!trimmed || answering.current) return;
-    if (!force && (!looksLikeQuestion(trimmed) || answeredIds.current.has(key))) return;
-    answeredIds.current.add(key);
+    if (!force && dedupe.every((key) => answeredIds.current.has(key))) return;
+    for (const key of dedupe) answeredIds.current.add(key);
     answering.current = true;
     const label = source === "me" ? "Me" : "Them";
     const fast = quickRef.current;
@@ -394,46 +374,43 @@ export default function OverlayWindow() {
     }
   }, [modelTier, query, reset]);
 
+  const speculated = useRef<string | null>(null);
+  const mePartial = transcript.partials.me ?? "";
+  const themPartial = transcript.partials.them ?? "";
+
+  useEffect(() => {
+    if (!transcript.listening) {
+      speculated.current = null;
+      return;
+    }
+    const hit = groundedAsk(transcript.lines, audioInput);
+    if (!hit) return;
+    if (hit.keys.every((key) => answeredIds.current.has(key))) return;
+    if (speculated.current && canAdoptSpeculation(speculated.current, hit.text)) {
+      for (const key of hit.keys) answeredIds.current.add(key);
+      speculated.current = null;
+      return;
+    }
+    speculated.current = null;
+    void requestAnswer(hit.source, hit.text, false, hit.keys);
+  }, [transcript.lines, transcript.listening, audioInput, answerTick, requestAnswer]);
+
+  // A stable partial from the selected input can start the answer before the line finishes.
   useEffect(() => {
     if (!transcript.listening) return;
-    const line = [...transcript.lines].reverse().find((item) => {
-      const key = `${item.source}:${item.text.trim()}`;
-      return looksLikeQuestion(item.text) && !answeredIds.current.has(key);
-    });
-    if (line) void requestAnswer(line.source, line.text);
-  }, [transcript.lines, transcript.listening, answerTick, requestAnswer]);
-
-  // System-only calls carry just the interviewer, so anything they finish saying
-  // gets an answer once they pause, even when it does not read as a question.
-  const autoSentIds = useRef<Set<string>>(new Set());
-  const themPartial = transcript.partials.them ?? "";
-  useEffect(() => {
-    if (!transcript.listening || activeInputRef.current !== "system") return;
-    if (themPartial.trim()) return;
-    const pending = transcript.lines.filter(
-      (line) =>
-        line.source === "them" &&
-        !autoSentIds.current.has(line.id) &&
-        !answeredIds.current.has(`them:${line.text.trim()}`),
-    );
-    if (pending.length === 0) return;
+    const pending = livePartial(audioInput, transcript.lines, mePartial, themPartial);
+    if (!pending || speculated.current || answering.current) return;
+    const hit = speculativeAsk(transcript.lines, pending.text, pending.source, audioInput);
+    if (!hit) return;
     const timer = window.setTimeout(() => {
-      if (answering.current || loading) return;
-      for (const line of pending) {
-        autoSentIds.current.add(line.id);
-        answeredIds.current.add(`them:${line.text.trim()}`);
-      }
-      void requestAnswer("them", pending.map((line) => line.text.trim()).join(" "), true);
-    }, autoSendPause);
+      if (speculated.current || answering.current) return;
+      const current = speculativeAsk(linesRef.current, pending.text, pending.source, audioInput);
+      if (!current) return;
+      speculated.current = current.text;
+      void requestAnswer(current.source, current.text, false, [`spec:${current.source}:${current.text}`]);
+    }, SPECULATIVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [transcript.lines, transcript.listening, themPartial, answerTick, loading, requestAnswer, autoSendPause]);
-
-  const cycleAutoSendPause = () => {
-    const index = AUTO_SEND_PAUSES_MS.indexOf(autoSendPause);
-    const next = AUTO_SEND_PAUSES_MS[(index + 1) % AUTO_SEND_PAUSES_MS.length];
-    setAutoSendPause(next);
-    localStorage.setItem(AUTO_SEND_PAUSE_KEY, String(next));
-  };
+  }, [mePartial, themPartial, audioInput, transcript.lines, transcript.listening, answerTick, requestAnswer]);
 
   /** One AI request at a time: they share one streamed response. Waiting questions retry when it ends. */
   const finishRequest = () => {
@@ -554,7 +531,6 @@ export default function OverlayWindow() {
   const beginListen = async () => {
     callId.current = `${Date.now()}-${crypto.randomUUID()}`;
     setMeetingApp(null);
-    activeInputRef.current = audioInput;
     await transcript.start(audioInput);
   };
 
@@ -706,17 +682,6 @@ export default function OverlayWindow() {
         >
           {audioInputOption.label}
         </button>
-
-        {audioInput === "system" && (
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={cycleAutoSendPause}
-            title={`Send the interviewer's words after ${autoSendPause / 1000}s of silence, even if it is not a question. Click to change.`}
-            className="text-[10px] px-2 py-0.5 rounded-md border border-violet-400/60 bg-violet-500/20 text-violet-100 hover:bg-violet-500/30 cursor-pointer"
-          >
-            ⏱ {autoSendPause / 1000}s
-          </button>
-        )}
 
         <button
           onMouseDown={(e) => e.stopPropagation()}
