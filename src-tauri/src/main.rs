@@ -7,9 +7,9 @@ fn main() {
 }
 
 /// The dev process is a child of Terminal, which already has microphone access.
-/// macOS therefore never asks Shiro, and Core Audio answers with error 'stop'
+/// macOS therefore never asks Voice Input, and Core Audio answers with error 'stop'
 /// (1937010544). Launch Services starts the signed bundle as its own app, so the
-/// permission prompt names Shiro and the microphone can start.
+/// permission prompt names Voice Input and the microphone can start.
 #[cfg(target_os = "macos")]
 fn relaunch_in_app_bundle() {
     use std::process::Command;
@@ -23,7 +23,7 @@ fn relaunch_in_app_bundle() {
         }
         exit_with_dev_parent();
         eprintln!(
-            "[shiro] running as Shiro.app (pid {}) so macOS can ask Shiro for the microphone",
+            "[shiro] running as Voice Input.app (pid {}) so macOS can ask Voice Input for the microphone",
             std::process::id()
         );
         return;
@@ -32,7 +32,7 @@ fn relaunch_in_app_bundle() {
         return;
     };
 
-    let app = parent.join("Shiro.app");
+    let app = parent.join("Voice Input.app");
     let contents = app.join("Contents");
     let macos_dir = contents.join("MacOS");
     let bundled = macos_dir.join("shiro");
@@ -46,19 +46,19 @@ fn relaunch_in_app_bundle() {
         && bundled.is_file()
         && contents.join("Info.plist").is_file();
     if already_signed {
-        eprintln!("[shiro] using the already signed Shiro.app");
+        eprintln!("[shiro] using the already signed Voice Input.app");
     } else {
         if let Err(error) = std::fs::create_dir_all(&macos_dir) {
-            eprintln!("[shiro] could not create Shiro.app: {error}");
+            eprintln!("[shiro] could not create Voice Input.app: {error}");
             return;
         }
         if let Err(error) = std::fs::copy(&exe, &bundled) {
-            eprintln!("[shiro] could not copy into Shiro.app: {error}");
+            eprintln!("[shiro] could not copy into Voice Input.app: {error}");
             return;
         }
         if let Err(error) = std::fs::write(contents.join("Info.plist"), include_str!("../Info.plist"))
         {
-            eprintln!("[shiro] could not write Shiro.app Info.plist: {error}");
+            eprintln!("[shiro] could not write Voice Input.app Info.plist: {error}");
             return;
         }
 
@@ -76,7 +76,7 @@ fn relaunch_in_app_bundle() {
             Ok(output) if output.status.success() => {}
             Ok(output) => {
                 eprintln!(
-                    "[shiro] could not sign Shiro.app: {}",
+                    "[shiro] could not sign Voice Input.app: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
                 return;
@@ -89,7 +89,7 @@ fn relaunch_in_app_bundle() {
         if let Some(stamp) = &stamp {
             let _ = std::fs::write(&stamp_path, stamp);
         }
-        eprintln!("[shiro] signed a new Shiro.app, so macOS may ask for Screen Recording again");
+        eprintln!("[shiro] signed a new Voice Input.app, so macOS may ask for Screen Recording again");
     }
 
     let log_path = parent.join("shiro-app.log");
@@ -125,11 +125,11 @@ fn relaunch_in_app_bundle() {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("[shiro] could not launch Shiro.app: {error}");
+            eprintln!("[shiro] could not launch Voice Input.app: {error}");
             return;
         }
     };
-    eprintln!("[shiro] launched Shiro.app so macOS can ask Shiro for the microphone");
+    eprintln!("[shiro] launched Voice Input.app so macOS can ask Voice Input for the microphone");
     let follow_log = log_path.clone();
     std::thread::spawn(move || {
         let mut offset = 0usize;
@@ -163,7 +163,7 @@ fn relaunch_in_app_bundle() {
 }
 
 /// `tauri dev` kills the launcher with SIGKILL when it rebuilds, so the signal
-/// forwarding below never runs. Without this check the old Shiro.app kept running
+/// forwarding below never runs. Without this check the old Voice Input.app kept running
 /// with no Dock icon, and its windows sat on screen catching clicks.
 #[cfg(target_os = "macos")]
 fn exit_with_dev_parent() {

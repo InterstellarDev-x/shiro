@@ -349,6 +349,7 @@ async fn start_listening(
     api_key: Option<String>,
     model: Option<String>,
     language: Option<String>,
+    audio_input: Option<String>,
     channel: tauri::ipc::Channel<stt::TranscriptEvent>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
@@ -375,7 +376,7 @@ async fn start_listening(
     if speech.id() == "deepgram" && config.api_key.trim().is_empty() {
         eprintln!("[shiro] Deepgram key missing, so no audio will be sent");
         return Err(
-            "Add a Deepgram API key in the main Shiro window under Settings, or set DEEPGRAM_API_KEY."
+            "Add a Deepgram API key in the main Voice Input window under Settings, or set DEEPGRAM_API_KEY."
                 .into(),
         );
     }
@@ -401,7 +402,13 @@ async fn start_listening(
         }
     });
 
-    let mut session = match listen::start_session(speech, config, tx).await {
+    let mut session = match listen::start_session(
+        speech,
+        config,
+        listen::AudioInput::parse(audio_input.as_deref()),
+        tx,
+    )
+    .await {
         Ok(session) => session,
         Err(error) => {
             forward.abort();
@@ -488,7 +495,7 @@ fn show_main(app: tauri::AppHandle) {
     show_main_window(&app);
 }
 
-/// The menu bar icon is off by default so Shiro has no visible trace until it is opened.
+/// The menu bar icon is off by default so Voice Input has no visible trace until it is opened.
 #[tauri::command]
 fn set_tray_visible(visible: bool, app: tauri::AppHandle) -> Result<(), String> {
     let tray = app.tray_by_id(TRAY_ID).ok_or("Menu bar icon is missing")?;
@@ -632,7 +639,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             // No Dock icon and no Cmd+Tab entry. Windows open only from the hotkey,
-            // the menu bar icon (if enabled), or opening Shiro again.
+            // the menu bar icon (if enabled), or opening Voice Input again.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             enable_autostart_on_first_run(app);
@@ -647,7 +654,7 @@ pub fn run() {
         })?;
 
             // System tray
-            let show_main = MenuItem::with_id(app, "show_main", "Open Shiro", true, None::<&str>)?;
+            let show_main = MenuItem::with_id(app, "show_main", "Open Voice Input", true, None::<&str>)?;
             let show_overlay = MenuItem::with_id(app, "show_overlay", "Open overlay", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_main, &show_overlay, &quit])?;
@@ -658,7 +665,7 @@ pub fn run() {
             let tray_handle = app.handle().clone();
             let tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(icon)
-                .tooltip("Shiro")
+                .tooltip("Voice Input")
                 .menu(&menu)
                 .on_menu_event(move |_tray, event| {
                     match event.id().as_ref() {
@@ -705,7 +712,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
-            // Opening Shiro again from Finder, Spotlight, or Launchpad shows the main window.
+            // Opening Voice Input again from Finder, Spotlight, or Launchpad shows the main window.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
                 show_main_window(_app);

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Shiro</string>
+  <string>Voice Input</string>
   <key>CFBundleDisplayName</key>
-  <string>Shiro</string>
+  <string>Voice Input</string>
   <key>CFBundleIdentifier</key>
   <string>com.adityaapkumar.shiro</string>
   <key>CFBundleExecutable</key>
@@ -19,12 +19,12 @@
   <key>CFBundleShortVersionString</key>
   <string>0.1.0</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>Shiro captures your screen to send to an AI assistant for analysis.</string>
+  <string>Voice Input captures your screen to send to an AI assistant for analysis.</string>
   <key>NSScreenCaptureDescription</key>
-  <string>Shiro captures your screen to send to an AI assistant for analysis.</string>
+  <string>Voice Input captures your screen to send to an AI assistant for analysis.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Shiro listens to your microphone so it can transcribe what you say on a call.</string>
+  <string>Voice Input listens to your microphone so it can transcribe what you say on a call.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>Shiro listens to system audio so it can transcribe the other person on a call.</string>
+  <string>Voice Input listens to system audio so it can transcribe the other person on a call.</string>
 </dict>
 </plist>

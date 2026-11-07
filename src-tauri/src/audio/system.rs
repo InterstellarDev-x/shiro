@@ -191,7 +191,7 @@ fn shareable_content() -> Result<screencapturekit::shareable_content::SCShareabl
         }
     }
     Err(format!(
-        "The other person's audio needs Screen Recording. Turn on Shiro in System Settings → Privacy & Security → Screen Recording. Your microphone stays on. ({last})"
+        "The other person's audio needs Screen Recording. Turn on Voice Input in System Settings → Privacy & Security → Screen Recording. Your microphone stays on. ({last})"
     ))
 }
 

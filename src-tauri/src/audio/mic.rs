@@ -56,7 +56,7 @@ pub fn start(tx: Sender<RawAudio>) -> Result<MicStream, String> {
             thread::spawn(move || {
                 let _ = thread.join();
             });
-            Err("The microphone did not open. Enable Shiro in System Settings → Privacy & Security → Microphone, then try again.".into())
+            Err("The microphone did not open. Enable Voice Input in System Settings → Privacy & Security → Microphone, then try again.".into())
         }
     }
 }
@@ -99,7 +99,7 @@ fn ensure_microphone_permission() -> Result<(), String> {
     }
     if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
         return Err(
-            "Microphone access is off. Turn it on for Shiro in System Settings → Privacy & Security → Microphone, then click Listen again."
+            "Microphone access is off. Turn it on for Voice Input in System Settings → Privacy & Security → Microphone, then click Listen again."
                 .into(),
         );
     }
@@ -121,7 +121,7 @@ fn ensure_microphone_permission() -> Result<(), String> {
             eprintln!("[shiro] microphone prompt returned {granted}");
             if !granted {
                 return Err(
-                    "Microphone access was denied. Turn it on for Shiro in System Settings → Privacy & Security → Microphone."
+                    "Microphone access was denied. Turn it on for Voice Input in System Settings → Privacy & Security → Microphone."
                         .into(),
                 );
             }
@@ -134,13 +134,13 @@ fn ensure_microphone_permission() -> Result<(), String> {
         }
         if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
             return Err(
-                "Microphone access is off. Turn it on for Shiro in System Settings → Privacy & Security → Microphone, then click Listen again."
+                "Microphone access is off. Turn it on for Voice Input in System Settings → Privacy & Security → Microphone, then click Listen again."
                     .into(),
             );
         }
         if Instant::now() >= deadline {
             return Err(
-                "Still waiting on the microphone prompt. Allow Shiro in System Settings → Privacy & Security → Microphone, then click Listen again."
+                "Still waiting on the microphone prompt. Allow Voice Input in System Settings → Privacy & Security → Microphone, then click Listen again."
                     .into(),
             );
         }
@@ -196,7 +196,7 @@ impl Drop for EngineInput {
 
 /// The HAL audio unit keeps returning 1937010544 ('stop') after microphone
 /// permission is granted. AVAudioEngine uses the same permission macOS already
-/// recorded for Shiro.
+/// recorded for Voice Input.
 #[cfg(target_os = "macos")]
 fn open(tx: Sender<RawAudio>) -> Result<EngineInput, String> {
     use block2::RcBlock;
@@ -342,7 +342,7 @@ fn open(tx: Sender<RawAudio>) -> Result<cpal::Stream, String> {
 #[cfg(not(target_os = "macos"))]
 fn microphone_open_error(message: &str) -> String {
     if message.contains("no longer available") {
-        "macOS has not granted the microphone to Shiro yet. Quit Shiro, start it again, click Listen, and choose Allow. Shiro is added to System Settings → Privacy & Security → Microphone only after that prompt.".into()
+        "macOS has not granted the microphone to Voice Input yet. Quit Voice Input, start it again, click Listen, and choose Allow. Voice Input is added to System Settings → Privacy & Security → Microphone only after that prompt.".into()
     } else {
         format!("Failed to open the microphone: {message}")
     }

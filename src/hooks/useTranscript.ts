@@ -9,6 +9,8 @@ import { loadCallSession } from "../callSession";
 
 export type TranscriptSource = "me" | "them";
 
+export type AudioInput = "both" | "mic" | "system";
+
 export interface TranscriptLine {
   id: string;
   source: TranscriptSource;
@@ -31,7 +33,7 @@ export function useTranscript() {
   const channelRef = useRef<Channel<TranscriptEvent> | null>(null);
   const startingRef = useRef(false);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (audioInput: AudioInput = "both") => {
     if (startingRef.current) return;
     startingRef.current = true;
     setError(null);
@@ -40,6 +42,7 @@ export function useTranscript() {
     setPartials({});
     const channel = new Channel<TranscriptEvent>();
     channel.onmessage = (event) => {
+      if (channelRef.current !== channel) return;
       if (event.kind === "partial") {
         setPartials((prev) => ({ ...prev, [event.source]: event.text }));
       } else if (event.kind === "final") {
@@ -72,6 +75,7 @@ export function useTranscript() {
         apiKey: localStorage.getItem("api_key_deepgram") ?? "",
         model,
         language: loadCallSession().language,
+        audioInput,
         channel,
       });
       setListening(true);

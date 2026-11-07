@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCaptureQuery } from "../hooks/useCaptureQuery";
 import { useHistory } from "../hooks/useHistory";
 import { useTemplates } from "../hooks/useTemplates";
-import { useTranscript, TranscriptSource } from "../hooks/useTranscript";
+import { useTranscript, TranscriptSource, AudioInput } from "../hooks/useTranscript";
 import { loadCallSession, withSession } from "../callSession";
 import { upsertSavedCall } from "../savedCalls";
 import MermaidChart from "../components/MermaidChart";
@@ -27,11 +27,37 @@ interface Message {
   text: string;
 }
 
+const QUESTION_WORDS = [
+  "who", "whom", "whose", "what", "whats", "what's", "when", "where", "why", "how", "which", "whether",
+  "is it", "is that", "is this", "is there", "are there", "are you", "are we", "was it", "were you",
+  "do you", "do we", "does", "did you", "did it", "can you", "can we", "can i", "could you", "could we",
+  "would you", "would it", "will you", "will it", "should i", "should we", "shall we", "may i", "might",
+  "have you", "has it", "had you", "any idea", "any thoughts", "any questions", "anything else",
+  "tell", "explain", "describe", "elaborate", "walk me", "walk us", "walk through", "talk about", "talk me",
+  "share", "discuss", "define", "compare", "contrast", "differentiate", "difference between", "list",
+  "name", "summarize", "summarise", "outline", "give me", "give us", "give an", "give a", "show me",
+  "write", "code", "implement", "design", "build", "solve", "calculate", "find", "count", "estimate",
+  "draw", "sketch", "diagram", "suggest", "recommend", "advise", "help me", "help us", "let's", "lets",
+  "imagine", "suppose", "assume", "consider", "think about", "go over", "go through", "brief",
+  "introduce", "introduction", "yourself", "your thoughts", "your opinion", "your view", "your take",
+  "your experience", "your background", "your role", "your strengths", "your weakness",
+  "i want to know", "i'd like to know", "i would like to know", "i'd like to hear", "i would like to hear",
+  "i'm curious", "i am curious", "i wonder", "wondering", "curious", "what about", "how about",
+  "kya", "kaise", "kyun", "kyon", "kab", "kahan", "kaun", "kitna", "kitne", "batao", "bataiye",
+  "bataye", "samjhao", "samjhaiye",
+];
+const QUESTION_PATTERN = new RegExp(
+  `\\b(${QUESTION_WORDS.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+  "i",
+);
+const DEVANAGARI_QUESTION_WORDS = ["क्या", "कैसे", "क्यों", "कब", "कहाँ", "कहां", "कौन", "कितना", "बताइए", "बताओ", "बताइये", "समझाइए", "समझाओ"];
+
 function looksLikeQuestion(text: string): boolean {
   const trimmed = text.trim();
-  if (trimmed.length < 8) return false;
-  if (trimmed.includes("?")) return true;
-  return /\b(who|what|when|where|why|how|which|can you|could you|would you|should i|is there|are there|do you|does|did you|will you|tell me|explain)\b/i.test(trimmed);
+  if (trimmed.length < 3) return false;
+  if (/[?？]/.test(trimmed)) return true;
+  if (QUESTION_PATTERN.test(trimmed)) return true;
+  return DEVANAGARI_QUESTION_WORDS.some((word) => trimmed.includes(word));
 }
 
 /** Only an explicit request gets a chart. "Architecture" alone is a normal question. */
@@ -86,7 +112,7 @@ const ChatMessage = memo(function ChatMessage({ role, text }: Message) {
   return (
     <div className={`flex flex-col gap-0.5 ${role === "user" ? "items-end" : "items-start"}`}>
       <span className="text-white/30 text-[10px] uppercase tracking-wide">
-        {role === "user" ? "You" : "Shiro"}
+        {role === "user" ? "You" : "Voice Input"}
       </span>
       {role === "user" ? (
         <div className="bg-blue-600/80 rounded-lg px-3 py-2 text-sm text-white max-w-[90%]">
@@ -106,6 +132,27 @@ const QUICK_KEY = "shiro_quick_context";
 const POS_KEY = "shiro_overlay_pos";
 const SIZE_KEY = "shiro_overlay_size";
 const OPACITY_KEY = "shiro_overlay_opacity";
+const AUDIO_INPUT_KEY = "shiro_audio_input";
+const AUTO_SEND_PAUSE_KEY = "shiro_auto_send_pause_ms";
+/** Silence after the interviewer's last finished line before it is sent without looking like a question. */
+const AUTO_SEND_PAUSES_MS = [500, 1000, 1500, 2000, 3000, 5000];
+const DEFAULT_AUTO_SEND_PAUSE_MS = 1500;
+
+function loadAutoSendPause(): number {
+  const saved = Number(localStorage.getItem(AUTO_SEND_PAUSE_KEY));
+  return AUTO_SEND_PAUSES_MS.includes(saved) ? saved : DEFAULT_AUTO_SEND_PAUSE_MS;
+}
+
+const AUDIO_INPUTS: { value: AudioInput; label: string; title: string }[] = [
+  { value: "both", label: "🎙+🔊 Both", title: "Listen to your microphone and system audio" },
+  { value: "mic", label: "🎙 Mic", title: "Listen to your microphone or external input only" },
+  { value: "system", label: "🔊 System", title: "Listen to system audio only" },
+];
+
+function loadAudioInput(): AudioInput {
+  const saved = localStorage.getItem(AUDIO_INPUT_KEY);
+  return AUDIO_INPUTS.some((input) => input.value === saved) ? (saved as AudioInput) : "both";
+}
 
 export default function OverlayWindow() {
   const [prompt, setPrompt] = useState("");
@@ -123,6 +170,9 @@ export default function OverlayWindow() {
     () => localStorage.getItem(SCREEN_KEY) !== "0"
   );
   const [quick, setQuick] = useState(() => localStorage.getItem(QUICK_KEY) === "1");
+  const [audioInput, setAudioInput] = useState<AudioInput>(loadAudioInput);
+  const activeInputRef = useRef<AudioInput>(audioInput);
+  const [autoSendPause, setAutoSendPause] = useState(loadAutoSendPause);
 
   const { response, loading, error, query, reset } = useCaptureQuery();
   const { addEntry } = useHistory();
@@ -134,7 +184,7 @@ export default function OverlayWindow() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  const ignoreScrollUntil = useRef(0);
+  const [following, setFollowing] = useState(true);
   const wasLoading = useRef(false);
   const appWindow = getCurrentWindow();
 
@@ -176,41 +226,70 @@ export default function OverlayWindow() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Follow the newest line, including Shiro's reply as it grows. A pin sets
-  // scrollTop, and WebKit reports that scroll later — after the reply has
-  // already gotten taller — so those events must not count as the user leaving.
+  const setStick = useCallback((value: boolean) => {
+    if (stickRef.current === value) return;
+    stickRef.current = value;
+    setFollowing(value);
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    setStick(true);
+    const node = scrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [setStick]);
+
+  // Follow the newest line, including Voice Input's reply as it grows. Layout changes
+  // (markdown, code, charts) fire scroll events late and at odd offsets, so only
+  // scrolls that follow a wheel or a pointer press can stop or resume following.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    let userUntil = 0;
+    let pointerDown = false;
     const pin = () => {
-      if (!stickRef.current) return;
-      ignoreScrollUntil.current = performance.now() + 180;
-      el.scrollTop = el.scrollHeight;
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
     };
     const onScroll = () => {
-      if (performance.now() < ignoreScrollUntil.current) return;
-      stickRef.current = distanceFromBottom() < 64;
+      if (!pointerDown && performance.now() > userUntil) return;
+      setStick(distanceFromBottom() < 64);
     };
-    const onWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) stickRef.current = false;
-      else if (distanceFromBottom() < 64) stickRef.current = true;
+    const onWheel = () => {
+      userUntil = performance.now() + 300;
+    };
+    const onPointerDown = () => {
+      pointerDown = true;
+    };
+    const onPointerUp = () => {
+      if (!pointerDown) return;
+      pointerDown = false;
+      userUntil = performance.now() + 150;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
     const observer = new ResizeObserver(pin);
+    observer.observe(el);
     const content = el.firstElementChild;
     if (content) observer.observe(content);
     pin();
     return () => {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
       observer.disconnect();
     };
-  }, []);
+  }, [setStick]);
+
+  const lastMessageRole = messages[messages.length - 1]?.role;
+  useEffect(() => {
+    if (lastMessageRole === "user") setStick(true);
+  }, [messages.length, lastMessageRole, setStick]);
 
   useEffect(() => {
-    if (loading && !wasLoading.current) stickRef.current = true;
+    if (loading && !wasLoading.current) setStick(true);
     wasLoading.current = loading;
     if (!stickRef.current) return;
     let inner = 0;
@@ -218,7 +297,6 @@ export default function OverlayWindow() {
       inner = requestAnimationFrame(() => {
         const node = scrollRef.current;
         if (!node || !stickRef.current) return;
-        ignoreScrollUntil.current = performance.now() + 180;
         node.scrollTop = node.scrollHeight;
       });
     });
@@ -226,7 +304,7 @@ export default function OverlayWindow() {
       cancelAnimationFrame(outer);
       cancelAnimationFrame(inner);
     };
-  }, [response, messages, loading]);
+  }, [response, messages, loading, setStick]);
 
   // Commit the reply once. Parsing markdown on every token re-rendered the whole chat.
   useEffect(() => {
@@ -281,8 +359,9 @@ export default function OverlayWindow() {
   const requestAnswer = useCallback(async (source: TranscriptSource, text: string, force = false) => {
     const trimmed = text.trim();
     const key = `${source}:${trimmed}`;
-    if (!trimmed || (!force && !looksLikeQuestion(trimmed)) || answeredIds.current.has(key) || answering.current) return;
-    if (!force) answeredIds.current.add(key);
+    if (!trimmed || answering.current) return;
+    if (!force && (!looksLikeQuestion(trimmed) || answeredIds.current.has(key))) return;
+    answeredIds.current.add(key);
     answering.current = true;
     const label = source === "me" ? "Me" : "Them";
     const fast = quickRef.current;
@@ -324,6 +403,44 @@ export default function OverlayWindow() {
     if (line) void requestAnswer(line.source, line.text);
   }, [transcript.lines, transcript.listening, answerTick, requestAnswer]);
 
+  // System-only calls carry just the interviewer, so anything they finish saying
+  // gets an answer once they pause, even when it does not read as a question.
+  const autoSentIds = useRef<Set<string>>(new Set());
+  const themPartial = transcript.partials.them ?? "";
+  useEffect(() => {
+    if (!transcript.listening || activeInputRef.current !== "system") return;
+    if (themPartial.trim()) return;
+    const pending = transcript.lines.filter(
+      (line) =>
+        line.source === "them" &&
+        !autoSentIds.current.has(line.id) &&
+        !answeredIds.current.has(`them:${line.text.trim()}`),
+    );
+    if (pending.length === 0) return;
+    const timer = window.setTimeout(() => {
+      if (answering.current || loading) return;
+      for (const line of pending) {
+        autoSentIds.current.add(line.id);
+        answeredIds.current.add(`them:${line.text.trim()}`);
+      }
+      void requestAnswer("them", pending.map((line) => line.text.trim()).join(" "), true);
+    }, autoSendPause);
+    return () => window.clearTimeout(timer);
+  }, [transcript.lines, transcript.listening, themPartial, answerTick, loading, requestAnswer, autoSendPause]);
+
+  const cycleAutoSendPause = () => {
+    const index = AUTO_SEND_PAUSES_MS.indexOf(autoSendPause);
+    const next = AUTO_SEND_PAUSES_MS[(index + 1) % AUTO_SEND_PAUSES_MS.length];
+    setAutoSendPause(next);
+    localStorage.setItem(AUTO_SEND_PAUSE_KEY, String(next));
+  };
+
+  /** One AI request at a time: they share one streamed response. Waiting questions retry when it ends. */
+  const finishRequest = () => {
+    answering.current = false;
+    setAnswerTick((tick) => tick + 1);
+  };
+
   const writeNotes = async () => {
     if (answering.current || loading) return;
     const body = linesRef.current
@@ -339,7 +456,7 @@ export default function OverlayWindow() {
       if (apiKey.trim()) await applyModelTier(modelTier);
       await query(withSession(body), { text: true, screen: false, task: "notes" });
     } finally {
-      answering.current = false;
+      finishRequest();
       saveActiveCall();
     }
   };
@@ -400,7 +517,7 @@ export default function OverlayWindow() {
         : withSession(`${body}\n\nLatest question: ${question}`.trim());
       await query(payload, { text: true, screen: false, task: "answer" });
     } finally {
-      answering.current = false;
+      finishRequest();
       saveActiveCall();
     }
   };
@@ -429,7 +546,7 @@ export default function OverlayWindow() {
         window.speechSynthesis.speak(new SpeechSynthesisUtterance(question));
       }
     } finally {
-      answering.current = false;
+      finishRequest();
       saveActiveCall();
     }
   };
@@ -437,8 +554,18 @@ export default function OverlayWindow() {
   const beginListen = async () => {
     callId.current = `${Date.now()}-${crypto.randomUUID()}`;
     setMeetingApp(null);
-    await transcript.start();
+    activeInputRef.current = audioInput;
+    await transcript.start(audioInput);
   };
+
+  const cycleAudioInput = () => {
+    const index = AUDIO_INPUTS.findIndex((input) => input.value === audioInput);
+    const next = AUDIO_INPUTS[(index + 1) % AUDIO_INPUTS.length].value;
+    setAudioInput(next);
+    localStorage.setItem(AUDIO_INPUT_KEY, next);
+  };
+
+  const audioInputOption = AUDIO_INPUTS.find((input) => input.value === audioInput) ?? AUDIO_INPUTS[0];
 
   useEffect(() => {
     if (!callId.current || transcript.lines.length === 0) return;
@@ -485,15 +612,20 @@ export default function OverlayWindow() {
   };
 
   const handleSubmit = async (cached = false) => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || loading || answering.current) return;
+    answering.current = true;
     const userPrompt = prompt.trim();
     setPrompt("");
     setMessages((prev) => [...prev, { role: "user", text: userPrompt }]);
     reset();
-    const finalResponse = await query(userPrompt, { cached });
-    if (finalResponse) {
-      addEntry(userPrompt, finalResponse);
-      if (!cached) setHasCachedShot(true);
+    try {
+      const finalResponse = await query(userPrompt, { cached });
+      if (finalResponse) {
+        addEntry(userPrompt, finalResponse);
+        if (!cached) setHasCachedShot(true);
+      }
+    } finally {
+      finishRequest();
     }
   };
 
@@ -505,11 +637,16 @@ export default function OverlayWindow() {
   };
 
   const handleTemplate = async (templatePrompt: string) => {
-    if (loading) return;
+    if (loading || answering.current) return;
+    answering.current = true;
     setMessages((prev) => [...prev, { role: "user", text: templatePrompt }]);
     reset();
-    const finalResponse = await query(templatePrompt, { cached: false });
-    if (finalResponse) { addEntry(templatePrompt, finalResponse); setHasCachedShot(true); }
+    try {
+      const finalResponse = await query(templatePrompt, { cached: false });
+      if (finalResponse) { addEntry(templatePrompt, finalResponse); setHasCachedShot(true); }
+    } finally {
+      finishRequest();
+    }
   };
 
   const handleNewChat = () => {
@@ -538,7 +675,7 @@ export default function OverlayWindow() {
         className="h-9 flex items-center px-3 gap-2 select-none cursor-grab active:cursor-grabbing shrink-0 border-b border-white/10"
       >
         <span className="flex-1 text-xs font-semibold text-white/60 tracking-wide uppercase pointer-events-none">
-          Shiro
+          Voice Input
         </span>
 
         <button
@@ -553,6 +690,33 @@ export default function OverlayWindow() {
         >
           {transcript.listening ? "■ Stop" : "🎤 Listen"}
         </button>
+
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={cycleAudioInput}
+          disabled={transcript.listening}
+          title={
+            transcript.listening
+              ? `${audioInputOption.title}. Stop listening to change it.`
+              : `${audioInputOption.title}. Click to switch.`
+          }
+          className={`text-[10px] px-2 py-0.5 rounded-md border border-sky-400/60 bg-sky-500/20 text-sky-100 ${
+            transcript.listening ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-sky-500/30"
+          }`}
+        >
+          {audioInputOption.label}
+        </button>
+
+        {audioInput === "system" && (
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={cycleAutoSendPause}
+            title={`Send the interviewer's words after ${autoSendPause / 1000}s of silence, even if it is not a question. Click to change.`}
+            className="text-[10px] px-2 py-0.5 rounded-md border border-violet-400/60 bg-violet-500/20 text-violet-100 hover:bg-violet-500/30 cursor-pointer"
+          >
+            ⏱ {autoSendPause / 1000}s
+          </button>
+        )}
 
         <button
           onMouseDown={(e) => e.stopPropagation()}
@@ -622,7 +786,7 @@ export default function OverlayWindow() {
         <button
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => invoke("show_main").catch(console.error)}
-          title="Open Shiro: session, saved calls, settings"
+          title="Open Voice Input: session, saved calls, settings"
           className="text-white/40 hover:text-white/80 text-xs px-1 cursor-pointer"
         >
           ⚙
@@ -667,6 +831,7 @@ export default function OverlayWindow() {
       )}
 
       {/* Conversation messages */}
+      <div className="relative min-h-0 flex-1 flex flex-col">
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
         <div className="px-3 py-2 flex flex-col gap-3">
         {meetingApp && !transcript.listening && (
@@ -704,42 +869,6 @@ export default function OverlayWindow() {
 
         {(transcript.listening || transcript.lines.length > 0 || transcript.error) && (
           <div className="flex flex-col gap-1.5 pb-2 border-b border-white/10">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-wide text-white/40 truncate">
-                {sessionTitle || transcript.status || "Call"}
-              </span>
-              {(transcript.listening || transcript.lines.length > 0) && (
-                <span className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={answerNow}
-                    disabled={loading}
-                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
-                  >
-                    Answer
-                  </button>
-                  <button
-                    onClick={() => void askMock()}
-                    disabled={loading}
-                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
-                  >
-                    Mock
-                  </button>
-                  <button
-                    onClick={() => void writeNotes()}
-                    disabled={loading}
-                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer disabled:opacity-40"
-                  >
-                    Notes
-                  </button>
-                  <button
-                    onClick={transcript.clear}
-                    className="text-[10px] text-white/40 hover:text-white/70 cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </span>
-              )}
-            </div>
             {transcript.lines.map((line) => (
               <TranscriptRow key={line.id} source={line.source} text={line.text} live={false} />
             ))}
@@ -761,7 +890,7 @@ export default function OverlayWindow() {
 
         {loading && messages[messages.length - 1]?.role === "user" && (
           <div className="flex flex-col gap-0.5 items-start">
-            <span className="text-white/30 text-[10px] uppercase tracking-wide">Shiro</span>
+            <span className="text-white/30 text-[10px] uppercase tracking-wide">Voice Input</span>
             <div className={`max-w-[90%] rounded-lg bg-white/10 px-3 py-2 text-sm whitespace-pre-wrap ${response ? "text-white/90" : "animate-pulse text-white/50"}`}>
               {response || "Thinking…"}
             </div>
@@ -773,6 +902,44 @@ export default function OverlayWindow() {
         )}
         </div>
       </div>
+      {!following && (
+        <button
+          onClick={jumpToBottom}
+          title="Jump to the newest line and keep following"
+          className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-blue-600/90 hover:bg-blue-600 px-3 py-1 text-[11px] text-white shadow-lg cursor-pointer"
+        >
+          ↓ New
+        </button>
+      )}
+      </div>
+
+      {/* Call controls stay outside the scroll area so they are always reachable */}
+      {(transcript.listening || transcript.lines.length > 0 || transcript.error) && (
+        <div className="flex items-center justify-between gap-2 px-3 py-1.5 shrink-0 border-t border-white/10 bg-black/30">
+          <span className="text-[10px] uppercase tracking-wide text-white/40 truncate">
+            {sessionTitle || transcript.status || "Call"}
+          </span>
+          {(transcript.listening || transcript.lines.length > 0) && (
+            <span className="flex items-center gap-1.5 shrink-0">
+              {[
+                { label: "Answer", onClick: answerNow, disabled: loading },
+                { label: "Mock", onClick: () => void askMock(), disabled: loading },
+                { label: "Notes", onClick: () => void writeNotes(), disabled: loading },
+                { label: "Clear", onClick: transcript.clear, disabled: false },
+              ].map((action) => (
+                <button
+                  key={action.label}
+                  onClick={action.onClick}
+                  disabled={action.disabled}
+                  className="text-[11px] px-2 py-0.5 rounded-md border border-white/20 bg-white/10 text-white/70 hover:text-white hover:bg-white/20 cursor-pointer disabled:opacity-40"
+                >
+                  {action.label}
+                </button>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Template pills */}
       <div className="flex gap-1.5 px-3 py-1.5 overflow-x-auto shrink-0 border-t border-white/10 scrollbar-none">

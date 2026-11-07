@@ -38,12 +38,13 @@ If the Settings panel is taller than the window, scroll inside the panel. You do
 2. Interview mode can include a résumé. Reference notes and a text or PDF file are sent with full answers.
 3. Pick the call language. That language is sent to Deepgram.
 4. Open the overlay with `Ctrl+Shift+0`.
-5. Press **Listen**. Your microphone is labeled Me. System audio is labeled Them.
-6. A question in the transcript is answered on its own. **Answer** replies to the latest line even when it is not a question.
-7. **Call** answers a typed question from the transcript and does not take a new screenshot. **📷 Ask** captures the screen and sends that picture.
-8. **🖥 On** attaches a screenshot to spoken answers. **Quick** sends only the latest line. **Full** sends the session, the résumé, the notes, and the last eight lines. **⚡ Fast** and **🧠 Smart** choose the model.
-9. **Notes** writes a summary, the questions, and the next steps.
-10. **Mock** asks one interview question out loud from the session. Press it again for the next question.
+5. Pick what to hear with the button next to **Listen**: **Both** (microphone and system audio), **Mic** (microphone or an external input only), or **System** (system audio only). You can change it only while Listen is stopped.
+6. Press **Listen**. Your microphone is labeled Me. System audio is labeled Them.
+7. A question in the transcript is answered on its own. **Answer** replies to the latest line even when it is not a question.
+8. **Call** answers a typed question from the transcript and does not take a new screenshot. **📷 Ask** captures the screen and sends that picture.
+9. **🖥 On** attaches a screenshot to spoken answers. **Quick** sends only the latest line. **Full** sends the session, the résumé, the notes, and the last eight lines. **⚡ Fast** and **🧠 Smart** choose the model.
+10. **Notes** writes a summary, the questions, and the next steps.
+11. **Mock** asks one interview question out loud from the session. Press it again for the next question.
 
 The call is saved on the main window under **Calls**. Open it to read the transcript, the answers, and the notes. The sidebar line is only the title and a preview.
 

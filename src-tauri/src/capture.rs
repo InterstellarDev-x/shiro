@@ -25,7 +25,7 @@ pub fn capture_primary_screen() -> Result<Vec<u8>, String> {
             {
                 let msg = e.to_string();
                 if msg.contains("permission") || msg.contains("CGDisplay") || msg.contains("denied") {
-                    return "Screen recording permission denied. Go to System Settings → Privacy & Security → Screen Recording and enable Shiro.".to_string();
+                    return "Screen recording permission denied. Go to System Settings → Privacy & Security → Screen Recording and enable Voice Input.".to_string();
                 }
             }
             format!("Screen capture failed: {e}")
@@ -33,7 +33,7 @@ pub fn capture_primary_screen() -> Result<Vec<u8>, String> {
 
     #[cfg(target_os = "macos")]
     if looks_blank(&image) {
-        return Err("Screen capture returned a blank image. Go to System Settings → Privacy & Security → Screen Recording and enable Shiro.".into());
+        return Err("Screen capture returned a blank image. Go to System Settings → Privacy & Security → Screen Recording and enable Voice Input.".into());
     }
 
     const MAX_EDGE: u32 = 1280;

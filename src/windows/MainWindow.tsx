@@ -286,7 +286,7 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Launch at startup</p>
-            <p className="text-xs text-zinc-400">Start Shiro automatically when you log in</p>
+            <p className="text-xs text-zinc-400">Start Voice Input automatically when you log in</p>
           </div>
           <button
             onClick={toggleAutostart}
@@ -303,7 +303,7 @@ function SettingsPanel({ onClose, onHotkeyChange }: { onClose: () => void; onHot
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Menu bar icon</p>
-            <p className="text-xs text-zinc-400">Off keeps Shiro out of sight. Open Shiro again from Spotlight or Applications to see this window.</p>
+            <p className="text-xs text-zinc-400">Off keeps Voice Input out of sight. Open Voice Input again from Spotlight or Applications to see this window.</p>
           </div>
           <button
             onClick={toggleTray}
@@ -500,7 +500,7 @@ export default function MainWindow() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
         {/* Header */}
         <div className="flex items-center justify-between shrink-0">
-          <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Shiro</h1>
+          <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Voice Input</h1>
           <button
             onClick={() => setShowSettings(true)}
             className="rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-sm text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"

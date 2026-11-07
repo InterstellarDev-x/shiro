@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "shiro",
+  "productName": "Voice Input",
   "version": "0.1.0",
   "identifier": "com.adityaapkumar.shiro",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Shiro",
+        "title": "Voice Input",
         "url": "/",
         "width": 720,
         "height": 560,
@@ -24,7 +24,7 @@
       },
       {
         "label": "overlay",
-        "title": "Shiro Overlay",
+        "title": "Voice Input Overlay",
         "url": "/#/overlay",
         "width": 340,
         "height": 480,
@@ -53,7 +53,9 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
     }
   }
 }

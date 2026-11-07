@@ -8,6 +8,31 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle as TaskHandle;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioInput {
+    Both,
+    Microphone,
+    System,
+}
+
+impl AudioInput {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("mic") | Some("microphone") => Self::Microphone,
+            Some("system") => Self::System,
+            _ => Self::Both,
+        }
+    }
+
+    fn uses_microphone(self) -> bool {
+        self != Self::System
+    }
+
+    fn uses_system(self) -> bool {
+        self != Self::Microphone
+    }
+}
+
 pub struct ListenSession {
     stop_flag: Arc<AtomicBool>,
     stop_tx: watch::Sender<bool>,
@@ -43,6 +68,7 @@ impl ListenSession {
 pub async fn start_session(
     engine: Arc<dyn SpeechEngine>,
     config: SpeechConfig,
+    input: AudioInput,
     events: mpsc::Sender<TranscriptEvent>,
 ) -> Result<ListenSession, String> {
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -50,7 +76,10 @@ pub async fn start_session(
 
     let _ = events
         .send(TranscriptEvent::Status {
-            message: "Allow microphone access if macOS asks.".into(),
+            message: match input {
+                AudioInput::System => "Allow screen recording access if macOS asks.".into(),
+                _ => "Allow microphone access if macOS asks.".into(),
+            },
         })
         .await;
 
@@ -59,42 +88,57 @@ pub async fn start_session(
     let (mic_raw_tx, mic_raw_rx) = crossbeam_channel::bounded::<RawAudio>(64);
     let (sys_raw_tx, sys_raw_rx) = crossbeam_channel::bounded::<RawAudio>(64);
 
-    let mic = tokio::task::spawn_blocking(move || start_microphone(mic_raw_tx))
-        .await
-        .map_err(|error| format!("Microphone task failed: {error}"))??;
-    let system = match tokio::task::spawn_blocking(move || start_system_audio(sys_raw_tx)).await {
-        Ok(Ok(system)) => Some(system),
-        Ok(Err(error)) => {
-            eprintln!("[shiro] system audio unavailable: {error}");
-            let _ = events
-                .send(TranscriptEvent::Error {
-                    message: error,
-                })
-                .await;
-            None
+    let mic = if input.uses_microphone() {
+        Some(
+            tokio::task::spawn_blocking(move || start_microphone(mic_raw_tx))
+                .await
+                .map_err(|error| format!("Microphone task failed: {error}"))??,
+        )
+    } else {
+        None
+    };
+    let system = if input.uses_system() {
+        let result = match tokio::task::spawn_blocking(move || start_system_audio(sys_raw_tx)).await {
+            Ok(result) => result,
+            Err(error) => Err(format!("System audio task failed: {error}")),
+        };
+        match result {
+            Ok(system) => Some(system),
+            Err(error) if input == AudioInput::System => {
+                if error.contains("Screen Recording") {
+                    open_screen_recording_settings();
+                    return Err(
+                        "System audio needs Screen Recording. In the settings window that just opened, select Voice Input and \
+                         remove it with the minus (−) button, add it again or switch it on, then quit and reopen Voice Input. \
+                         A switch that is already on can belong to an older build of Voice Input."
+                            .into(),
+                    );
+                }
+                return Err(error);
+            }
+            Err(error) => {
+                eprintln!("[shiro] system audio unavailable: {error}");
+                let _ = events.send(TranscriptEvent::Error { message: error }).await;
+                None
+            }
         }
-        Err(error) => {
-            let message = format!("System audio task failed: {error}");
-            eprintln!("[shiro] {message}");
-            let _ = events
-                .send(TranscriptEvent::Error { message })
-                .await;
-            None
-        }
+    } else {
+        None
     };
 
     let mut threads = Vec::new();
-    threads.push(spawn_bridge(mic_raw_rx, me_tx, stop_flag.clone()));
-
     let mut tasks = Vec::new();
-    tasks.push(spawn_engine(
-        engine.clone(),
-        AudioSource::Me,
-        config.clone(),
-        me_rx,
-        events.clone(),
-        stop_rx.clone(),
-    ));
+    if mic.is_some() {
+        threads.push(spawn_bridge(mic_raw_rx, me_tx, stop_flag.clone()));
+        tasks.push(spawn_engine(
+            engine.clone(),
+            AudioSource::Me,
+            config.clone(),
+            me_rx,
+            events.clone(),
+            stop_rx.clone(),
+        ));
+    }
     if system.is_some() {
         threads.push(spawn_bridge(sys_raw_rx, them_tx, stop_flag.clone()));
         tasks.push(spawn_engine(
@@ -116,11 +160,20 @@ pub async fn start_session(
     Ok(ListenSession {
         stop_flag,
         stop_tx,
-        mic: Some(mic),
+        mic,
         system,
         threads,
         tasks,
     })
+}
+
+fn open_screen_recording_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            .spawn();
+    }
 }
 
 fn spawn_bridge(
